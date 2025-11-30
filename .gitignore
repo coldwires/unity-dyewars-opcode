@@ -1,0 +1,103 @@
+# ============================================
+# DyeWars Project .gitignore
+# Place this in DyeWarsProject/ root
+# ============================================
+
+# --------------------------------------------
+# C++ / CMake Build Artifacts
+# --------------------------------------------
+build/
+cmake-build-*/
+out/
+*.obj
+*.o
+*.exe
+*.dll
+*.so
+*.dylib
+*.lib
+*.a
+*.pdb
+*.ilk
+*.exp
+*.iobj
+*.ipdb
+
+# CMake generated
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.ninja
+.ninja_deps
+.ninja_log
+
+# --------------------------------------------
+# JetBrains IDEs (CLion, Rider)
+# --------------------------------------------
+.idea/
+
+# --------------------------------------------
+# Unity
+# --------------------------------------------
+# Generated folders
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+[Mm]emoryCaptures/
+[Rr]ecordings/
+
+# Asset meta data should be kept, but not these
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+
+# Unity3D generated
+*.csproj
+*.unityproj
+*.sln
+*.suo
+*.tmp
+*.user
+*.userprefs
+*.pidb
+*.booproj
+
+# Crashlytics
+crashlytics-build.properties
+
+# Asset bundles
+*.unitypackage
+AssetBundles/
+
+# Plastic SCM
+*.ignore
+*.private
+*.private.meta
+
+# Visual Studio
+.vs/
+
+# --------------------------------------------
+# OS Generated
+# --------------------------------------------
+.DS_Store
+.DS_Store?
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --------------------------------------------
+# Misc
+# --------------------------------------------
+*.log
+*.bak
+*.swp
+*~
