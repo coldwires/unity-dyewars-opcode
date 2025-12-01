@@ -10,19 +10,23 @@ public class MultiplayerGridRenderer : MonoBehaviour
     [SerializeField] private Sprite gridCellSprite;
     [SerializeField] private Color gridColor = new Color(1, 1, 1, 0.1f);
 
+    [SerializeField] private Sprite[] directionSprites;
+    
     private GameObject localPlayerInstance;
     private Dictionary<uint, GameObject> otherPlayerInstances = new Dictionary<uint, GameObject>();
     private NetworkManager networkManager;
-
     void Start()
     {
         networkManager = FindFirstObjectByType<NetworkManager>();
+
         if (networkManager != null)
         {
             networkManager.OnMyPositionUpdated += OnMyPositionUpdated;
             networkManager.OnOtherPlayerUpdated += OnOtherPlayerUpdated;
             networkManager.OnPlayerLeft += OnPlayerLeft;
             networkManager.OnPlayerIDAssigned += OnPlayerIDAssigned;
+            networkManager.OnMyFacingUpdated += OnMyFacingUpdated;
+
         }
 
         CreateSpriteGrid();
@@ -36,13 +40,27 @@ public class MultiplayerGridRenderer : MonoBehaviour
         {
             localPlayerInstance = Instantiate(localPlayerPrefab);
             localPlayerInstance.name = $"LocalPlayer_{playerId}";
-            UpdateLocalPlayerVisual();
+            UpdateLocalPlayerPosition();
+            
+            OnMyFacingUpdated(networkManager.MyFacing);
+        }
+    }
+
+    private void OnMyFacingUpdated(int facing)
+    {
+        if (localPlayerInstance != null && directionSprites != null && facing < directionSprites.Length)
+        {
+            SpriteRenderer sr = localPlayerInstance.GetComponent<SpriteRenderer>();
+            if (sr != null)
+            {
+                sr.sprite = directionSprites[facing];
+            }
         }
     }
 
     private void OnMyPositionUpdated(Vector2Int newPos)
     {
-        UpdateLocalPlayerVisual();
+        UpdateLocalPlayerPosition();
     }
 
     private void OnOtherPlayerUpdated(uint playerId, Vector2Int newPos)
@@ -65,6 +83,18 @@ public class MultiplayerGridRenderer : MonoBehaviour
         {
             Vector3 worldPos = GridToWorld(newPos.x, newPos.y);
             otherPlayerInstances[playerId].transform.position = worldPos;
+            
+            if (networkManager.OtherFacing.TryGetValue(playerId, out int facing))
+            {
+                if (directionSprites != null && facing < directionSprites.Length)
+                {
+                    SpriteRenderer sr = otherPlayerInstances[playerId].GetComponent<SpriteRenderer>();
+                    if (sr != null)
+                    {
+                        sr.sprite = directionSprites[facing];
+                    }
+                }
+            }
         }
     }
 
@@ -103,7 +133,7 @@ public class MultiplayerGridRenderer : MonoBehaviour
         }
     }
 
-    private void UpdateLocalPlayerVisual()
+    private void UpdateLocalPlayerPosition()
     {
         if (localPlayerInstance != null && networkManager != null)
         {
@@ -129,6 +159,7 @@ public class MultiplayerGridRenderer : MonoBehaviour
             networkManager.OnOtherPlayerUpdated -= OnOtherPlayerUpdated;
             networkManager.OnPlayerLeft -= OnPlayerLeft;
             networkManager.OnPlayerIDAssigned -= OnPlayerIDAssigned;
+            networkManager.OnMyFacingUpdated -= OnMyFacingUpdated;
         }
     }
 }

@@ -12,7 +12,7 @@ public:
     LuaGameEngine();
     ~LuaGameEngine();
 
-    void OnPlayerMoved(uint32_t player_id, int x, int y);
+    void OnPlayerMoved(uint32_t player_id, int x, int y, uint8_t facing);
 
     bool ProcessMove(int& x, int& y, uint8_t direction);
     std::vector<uint8_t> ProcessCustomMessage(const std::vector<uint8_t>& data);

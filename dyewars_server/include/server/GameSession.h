@@ -23,14 +23,17 @@ public:
     bool IsDirty() const { return is_dirty_; }
     void SetDirty(bool val) { is_dirty_ = val; }
 
-    void SendPlayerUpdate(uint32_t id, int x, int y);
+    void SendPlayerUpdate(uint32_t id, int x, int y, uint8_t facing);
     void SendPlayerLeft(uint32_t id);
     void RawSend(std::shared_ptr<std::vector<uint8_t>> data);
 
     // Wrapper: Ask Player object for data
     PlayerData GetPlayerData() const {
-        return {player_->GetID(), player_->GetX(), player_->GetY()};
+        return {player_->GetID(), player_->GetX(), player_->GetY(), player_->GetFacing()};
     }
+
+
+    void SendFacingUpdate(uint8_t facing);
 
 private:
     void SendPlayerID();

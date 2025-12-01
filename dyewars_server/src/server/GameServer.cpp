@@ -50,7 +50,6 @@ void GameServer::ProcessUpdates() {
 
     {
         std::lock_guard<std::mutex> lock(sessions_mutex_);
-
         for (auto& pair : sessions_) {
             auto session = pair.second;
             all_receivers.push_back(session); // Everyone receives updates
@@ -58,33 +57,40 @@ void GameServer::ProcessUpdates() {
             if (session->IsDirty()) {
                 moving_players.push_back(session->GetPlayerData());
                 session->SetDirty(false); // Reset flag
+                PlayerData data = session->GetPlayerData();
             }
         }
     }
 
+
     if (moving_players.empty()) return;
+
+
+    // Now call Lua OUTSIDE the lock
+    for (const auto& data : moving_players) {
+        lua_engine_->OnPlayerMoved(data.player_id, data.x, data.y, data.facing);
+    }
 
     // --- OPTIMIZATION: PACKET COALESCING ---
     // Instead of sending N small packets, we build ONE big packet.
 
     Packet batchPacket;
-    batchPacket.payload.push_back(0x20); // New Opcode: 0x20 (Batch Update)
+    PacketWriter::WriteByte(batchPacket.payload, 0x20);
 
     // We can fit about 200 player updates in a standard 1400 byte MTU packet.
     // If you have more, you'd loop this, but for now let's assume < 200 moves/tick.
     uint8_t count = static_cast<uint8_t>(moving_players.size());
-    batchPacket.payload.push_back(count);
+    PacketWriter::WriteByte(batchPacket.payload, count);
 
     for (const auto& p : moving_players) {
         // Append Player ID (4 bytes)
-        batchPacket.payload.push_back((p.player_id >> 24) & 0xFF);
-        batchPacket.payload.push_back((p.player_id >> 16) & 0xFF);
-        batchPacket.payload.push_back((p.player_id >> 8) & 0xFF);
-        batchPacket.payload.push_back(p.player_id & 0xFF);
-
+        PacketWriter::WriteUInt(batchPacket.payload, p.player_id);
         // Append X, Y (1 byte each)
-        batchPacket.payload.push_back(static_cast<uint8_t>(p.x));
-        batchPacket.payload.push_back(static_cast<uint8_t>(p.y));
+        PacketWriter::WriteShort(batchPacket.payload, p.x);
+        PacketWriter::WriteShort(batchPacket.payload, p.y);
+        // Append Facing
+        PacketWriter::WriteByte(batchPacket.payload, p.facing);
+
     }
 
     batchPacket.size = static_cast<uint16_t>(batchPacket.payload.size());

@@ -1,7 +1,14 @@
 #include "include/server/Player.h"
 
 Player::Player(uint32_t id, int start_x, int start_y)
-        : id_(id), x_(start_x), y_(start_y) {}
+        : id_(id), x_(start_x), y_(start_y), facing_(2) {}
+
+
+void Player::SetFacing(uint8_t direction){
+    if (direction <= 3 && direction >= 0) {  // Validate: 0-3 only
+        facing_ = direction;
+    }
+}
 
 bool Player::AttemptMove(uint8_t direction, const GameMap& map) {
     int new_x = x_;

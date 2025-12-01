@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Threading;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.XR;
 
 public class NetworkManager : MonoBehaviour
 {
@@ -16,20 +17,45 @@ public class NetworkManager : MonoBehaviour
     // Local player data
     public uint MyPlayerID { get; private set; } = 0;
     public Vector2Int MyPosition { get; private set; } = new Vector2Int(0, 0);
-
+    public int MyFacing { get; private set; }
+    
+    
     // Other players data
     public Dictionary<uint, Vector2Int> OtherPlayers { get; private set; } = new Dictionary<uint, Vector2Int>();
+    public Dictionary<uint, int> OtherFacing { get; private set; } = new Dictionary<uint, int>();
 
     // Events
     public System.Action<Vector2Int> OnMyPositionUpdated;
     public System.Action<uint, Vector2Int> OnOtherPlayerUpdated;
     public System.Action<uint> OnPlayerLeft;
     public System.Action<uint> OnPlayerIDAssigned;
+    public System.Action<int> OnMyFacingUpdated;
 
     // Thread-safe queues
     private Queue<Action> mainThreadActions = new Queue<Action>();
     private object queueLock = new object();
 
+    private ushort ReadU16(byte[] payload, ref int offset)
+    {
+        // Combine two bytes into one ushort
+        // Don't forget to increment offset by 2
+        ushort retVal = (ushort)((payload[offset] << 8) | payload[offset+1]);
+        offset += 2;
+        return retVal;
+    }
+    private byte ReadU8(byte[] payload, ref int offset)
+    {
+        return payload[offset++];
+    }
+
+    private uint ReadU32(byte[] payload, ref int offset)
+    {
+        uint value = (uint)((payload[offset] << 24) | (payload[offset + 1] << 16) |
+                            (payload[offset + 2] << 8) | payload[offset + 3]);
+        offset += 4;
+        return value;
+    }
+    
     void Start()
     {
         Debug.Log("Connecting to server...");
@@ -73,19 +99,42 @@ public class NetworkManager : MonoBehaviour
         if (isConnected && Keyboard.current != null)
         {
             if (Keyboard.current.upArrowKey.wasPressedThisFrame)
-                SendMoveCommand(0);
+                HandleDirectionInput(0);
             else if (Keyboard.current.rightArrowKey.wasPressedThisFrame)
-                SendMoveCommand(1);
+                HandleDirectionInput(1);
             else if (Keyboard.current.downArrowKey.wasPressedThisFrame)
-                SendMoveCommand(2);
+                HandleDirectionInput(2);
             else if (Keyboard.current.leftArrowKey.wasPressedThisFrame)
-                SendMoveCommand(3);
+                HandleDirectionInput(3);
         }
     }
 
+    private void HandleDirectionInput(int direction)
+    {
+        if (MyFacing == direction)
+        {
+            //if we're facing this way, send a move
+            SendMoveCommand(direction);
+        }
+        else
+        {
+            SendTurnCommand(direction);
+        }
+    }
+
+    public void SendTurnCommand(int direction)
+    {
+        byte[] message = new byte[] { 0x04, (byte)direction };
+        //Send the request
+        SendMessage(message);
+        
+        //Turn inside client for interpolation
+        MyFacing = direction;
+        OnMyFacingUpdated?.Invoke(MyFacing);
+    }
     public void SendMoveCommand(int direction)
     {
-        byte[] message = new byte[] { 0x01, (byte)direction };
+        byte[] message = new byte[] { 0x01, (byte)direction, (byte)MyFacing };
         SendMessage(message);
         // 2. CLIENT-SIDE PREDICTION (Move immediately!)
         Vector2Int predictedPos = MyPosition;
@@ -187,10 +236,12 @@ public class NetworkManager : MonoBehaviour
         switch (messageType)
         {
             case 0x10: // My position update
-                if (payload.Length >= 3)
+                if (payload.Length >= 6) // 1 opcode + 2 x + 2 y + 1 facing
                 {
-                    int x = payload[1];
-                    int y = payload[2];
+                    int offset = 1; //Skip opcode
+                    int x = ReadU16(payload, ref offset);//payload[1];
+                    int y = ReadU16(payload, ref offset);
+                    int facing = ReadU8(payload, ref offset);
                     
                     lock (queueLock)
                     {
@@ -202,24 +253,34 @@ public class NetworkManager : MonoBehaviour
                                 MyPosition = new Vector2Int(x, y);
                                 OnMyPositionUpdated?.Invoke(MyPosition);
                             }
+
+                            if (MyFacing != facing)
+                            {
+                                Debug.Log($"Facing Correction: {facing}");
+                                MyFacing = facing;
+                                OnMyFacingUpdated?.Invoke(MyFacing);
+                            }
                         });
                     }
                 }
                 break;
 
             case 0x12: // Other player update
-                if (payload.Length >= 7)
+                if (payload.Length >= 10) // 1 opcode, 4 id, 2 x, 2 y, 1 facing
                 {
-                    uint playerId = (uint)((payload[1] << 24) | (payload[2] << 16) | 
-                                           (payload[3] << 8) | payload[4]);
-                    int x = payload[5];
-                    int y = payload[6];
+                    int offset = 1;    //skip opcode
+                    uint playerId = ReadU32(payload, ref offset);   //(uint)((payload[1] << 24) | (payload[2] << 16) | 
+                                                                    // (payload[3] << 8) | payload[4]);
+                    int x = ReadU16(payload, ref offset);
+                    int y = ReadU16(payload, ref offset);
+                    int facing = ReadU8(payload, ref offset);
                     
                     lock (queueLock)
                     {
                         mainThreadActions.Enqueue(() => {
                             OtherPlayers[playerId] = new Vector2Int(x, y);
-                            Debug.Log($"Player {playerId} at ({x}, {y})");
+                            OtherFacing[playerId] = facing;
+                            Debug.Log($"Player {playerId} at ({x}, {y}) facing {facing}");
                             OnOtherPlayerUpdated?.Invoke(playerId, new Vector2Int(x, y));
                         });
                     }
@@ -229,8 +290,10 @@ public class NetworkManager : MonoBehaviour
             case 0x13: // Player ID assignment
                 if (payload.Length >= 5)
                 {
-                    uint playerId = (uint)((payload[1] << 24) | (payload[2] << 16) | 
-                                           (payload[3] << 8) | payload[4]);
+                    int offset = 1;    //skip opcode
+                    uint playerId = ReadU32(payload, ref offset);
+                    //uint playerId = (uint)((payload[1] << 24) | (payload[2] << 16) | 
+                                           //(payload[3] << 8) | payload[4]);
                     
                     lock (queueLock)
                     {
@@ -246,8 +309,10 @@ public class NetworkManager : MonoBehaviour
             case 0x14: // Player left
                 if (payload.Length >= 5)
                 {
-                    uint playerId = (uint)((payload[1] << 24) | (payload[2] << 16) | 
-                                           (payload[3] << 8) | payload[4]);
+                    int offset = 1;    //skip opcode
+                    uint playerId = ReadU32(payload, ref offset);
+                    //uint playerId = (uint)((payload[1] << 24) | (payload[2] << 16) | 
+                    //                       (payload[3] << 8) | payload[4]);
                     
                     lock (queueLock)
                     {
@@ -266,27 +331,51 @@ public class NetworkManager : MonoBehaviour
             case 0x11: // Custom response
                 Debug.Log("Received custom message response");
                 break;
-            
-            case 0x20: // Batch Update (Multiple players at once)
-                if (payload.Length >= 2)
+            case 0x15: // Facing update
+                if (payload.Length >= 2) // 1 opcode + 1 facing
                 {
-                    int count = payload[1];
-                    int offset = 2; // Start after Opcode and Count
+                    int offset = 1;
+                    int facing = ReadU8(payload, ref offset);
+        
+                    lock (queueLock)
+                    {
+                        mainThreadActions.Enqueue(() => {
+                            if (MyFacing != facing)
+                            {
+                                Debug.Log($"Facing update: {facing}");
+                                MyFacing = facing;
+                                OnMyFacingUpdated?.Invoke(MyFacing);
+                            }
+                        });
+                    }
+                }
+                break;
+            case 0x20: // Batch Update (Multiple players at once)
+                if (payload.Length >= 9)
+                {
+                    int offset = 1;
+                    int count = ReadU8(payload, ref offset);
 
                     for (int i = 0; i < count; i++)
                     {
-                        // Check if we have enough bytes left for one player (4 ID + 1 X + 1 Y = 6 bytes)
-                        if (offset + 6 > payload.Length) break;
+                        // Check if we have enough bytes left for one player (4 ID + 2 X + 2 Y + 1 facing = 9 bytes)
+                        if (offset + 9 > payload.Length) break;
 
                         // Extract Player ID
-                        uint batchId = (uint)((payload[offset] << 24) | (payload[offset + 1] << 16) |
-                                              (payload[offset + 2] << 8) | payload[offset + 3]);
-                        offset += 4;
-
+                        uint batchId = ReadU32(payload, ref offset);
+                                              
                         // Extract Position
-                        int batchX = payload[offset];
-                        int batchY = payload[offset + 1];
-                        offset += 2;
+                        int batchX = ReadU16(payload, ref offset);
+                        int batchY = ReadU16(payload, ref offset);
+                        
+                        // Facing
+                        int batchFacing = ReadU8(payload, ref offset);
+                        
+                        // Capture copies for the lambda
+                        uint id = batchId;
+                        int x = batchX;
+                        int y = batchY;
+                        int facing = batchFacing;
 
                         // Queue the update for the main thread
                         lock (queueLock)
@@ -295,8 +384,15 @@ public class NetworkManager : MonoBehaviour
                                 // Don't update ourselves from the batch (we predict or use 0x10)
                                 if (batchId != MyPlayerID) 
                                 {
+                                    OtherPlayers[id] = new Vector2Int(x, y);
+                                    OtherFacing[id] = facing;
+                                    OnOtherPlayerUpdated?.Invoke(id, new Vector2Int(x, y));
+                                    /* The lambda captures batchId, batchX, batchY, batchFacing by reference.
+                                     By the time the lambda runs on the main thread, the loop may have overwritten these values.
                                     OtherPlayers[batchId] = new Vector2Int(batchX, batchY);
+                                    OtherFacing[batchId] = batchFacing;
                                     OnOtherPlayerUpdated?.Invoke(batchId, new Vector2Int(batchX, batchY));
+                                     */
                                 }
                             });
                         }
@@ -331,3 +427,4 @@ public class NetworkManager : MonoBehaviour
         }
     }
 }
+

@@ -54,9 +54,9 @@ function process_custom_message(data)
     return response
 end
 
-function on_player_moved(player_id, x, y)
+function on_player_moved(player_id, x, y, dir)
     if x == 5 and y == 1 then
-        log("Player" .. player_id .. "stepped on a trap!")
+        log("Player" .. player_id .. "stepped on a trap! Facing: " .. dir)
     end
 end
 

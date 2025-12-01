@@ -47,28 +47,50 @@ void GameSession::ReadPacketPayload(uint16_t size) {
 
 void GameSession::HandlePacket(const std::vector<uint8_t>& data) {
     if (data.empty()) return;
-    uint8_t msg_type = data[0];
+
+    size_t offset = 0;
+    uint8_t msg_type = PacketReader::ReadByte(data, offset);//data[0];
 
     switch (msg_type) {
         case 0x01: // Move
-            if (data.size() >= 2) {
+            if (data.size() >= 3) {
+                uint8_t direction = PacketReader::ReadByte(data, offset);
+                uint8_t facing = PacketReader::ReadByte(data, offset);
 
-                uint8_t direction = data[1];
+                //only move if direction matches facing
+                if(direction == facing && direction == player_->GetFacing()) {
 
-                bool moved = player_->AttemptMove(direction, server_->GetMap());
 
-                if(moved){
-                    // 2. OPTIONAL: Tell Lua "Event: Player Moved"
-                    // (Only do this if you need scripts to trigger, e.g. stepping on a trap)
-                    is_dirty_ = true;
-                    SendPosition();
+                    bool moved = player_->AttemptMove(direction, server_->GetMap());
 
-                    lua_engine_->OnPlayerMoved(player_->GetID(), player_->GetX(), player_->GetY());
+                    if (moved) {
+                        // 2. OPTIONAL: Tell Lua "Event: Player Moved"
+                        // (Only do this if you need scripts to trigger, e.g. stepping on a trap)
+                        is_dirty_ = true;
+                        SendPosition();
 
+                        //This would block the networking thread (even though lua should be fast and only calling events)
+                        //lua_engine_->OnPlayerMoved(player_->GetID(), player_->GetX(), player_->GetY());
+
+                    } else {
+                        // We hit a wall. Send position anyway to "Rubber Band" the client back to reality.
+                        SendPosition();
+                    }
                 } else {
-                    // We hit a wall. Send position anyway to "Rubber Band" the client back to reality.
-                    SendPosition();
+                    //Mismatch: turn player to match and send correction
+                    player_->SetFacing(direction);
+                    SendFacingUpdate(player_->GetFacing());
                 }
+            }
+            break;
+
+        case 0x04: //Turn
+            if(data.size() >= 2)
+            {
+                uint8_t direction = PacketReader::ReadByte(data, offset);
+                player_->SetFacing(direction);
+                is_dirty_ = true;       //Broadcast facing change to others
+                SendFacingUpdate(player_->GetFacing());
             }
             break;
         case 0x02: // Request Pos
@@ -94,25 +116,48 @@ void GameSession::SendPacket(const Packet& pkt) {
 }
 
 void GameSession::SendPlayerID() {
-    Packet pkt; pkt.payload = {0x13, (uint8_t)(player_->GetID()>>24), (uint8_t)(player_->GetID()>>16), (uint8_t)(player_->GetID()>>8), (uint8_t)player_->GetID()};
-    pkt.size = pkt.payload.size(); SendPacket(pkt);
+    Packet pkt;
+    PacketWriter::WriteByte(pkt.payload, 0x13);
+    PacketWriter::WriteUInt(pkt.payload, player_->GetID());
+    pkt.size = pkt.payload.size();
+    SendPacket(pkt);
 }
 
 void GameSession::SendPosition() {
-    Packet pkt; pkt.payload = {0x10, (uint8_t)player_->GetX(), (uint8_t)player_->GetY()};
-    pkt.size = pkt.payload.size(); SendPacket(pkt);
+    Packet pkt;
+    PacketWriter::WriteByte(pkt.payload, 0x10);
+    PacketWriter::WriteShort(pkt.payload, player_->GetX());
+    PacketWriter::WriteShort(pkt.payload, player_->GetY());
+    PacketWriter::WriteByte(pkt.payload, player_->GetFacing());
+    pkt.size = pkt.payload.size();
+    SendPacket(pkt);
 }
 
-void GameSession::SendPlayerUpdate(uint32_t id, int x, int y) {
+void GameSession::SendPlayerUpdate(uint32_t id, int x, int y, uint8_t facing) {
     Packet pkt;
-    pkt.payload = {0x12, (uint8_t)(id>>24), (uint8_t)(id>>16), (uint8_t)(id>>8), (uint8_t)id, (uint8_t)x, (uint8_t)y};
-    pkt.size = pkt.payload.size(); SendPacket(pkt);
+    PacketWriter::WriteByte(pkt.payload, 0x12);
+    PacketWriter::WriteUInt(pkt.payload, id);
+    PacketWriter::WriteShort(pkt.payload, x);
+    PacketWriter::WriteShort(pkt.payload, y);
+    PacketWriter::WriteByte(pkt.payload, facing);
+    pkt.size = pkt.payload.size();
+    SendPacket(pkt);
+}
+
+void GameSession::SendFacingUpdate(uint8_t facing) {
+    Packet pkt;
+    PacketWriter::WriteByte(pkt.payload, 0x15);
+    PacketWriter::WriteByte(pkt.payload, facing);
+    pkt.size = pkt.payload.size();
+    SendPacket(pkt);
 }
 
 void GameSession::SendPlayerLeft(uint32_t id) {
     Packet pkt;
-    pkt.payload = {0x14, (uint8_t)(id>>24), (uint8_t)(id>>16), (uint8_t)(id>>8), (uint8_t)id};
-    pkt.size = pkt.payload.size(); SendPacket(pkt);
+    PacketWriter::WriteByte(pkt.payload, 0x14);
+    PacketWriter::WriteUInt(pkt.payload, id);
+    pkt.size = pkt.payload.size();
+    SendPacket(pkt);
 }
 
 void GameSession::SendCustomMessage(const std::vector<uint8_t>& data) {
@@ -124,10 +169,12 @@ void GameSession::SendCustomMessage(const std::vector<uint8_t>& data) {
 // --- BROADCAST IMPLEMENTATIONS ---
 void GameSession::SendAllPlayers() {
     auto players = server_->GetAllPlayers();
-    for (const auto& p : players) if (p.player_id != player_->GetID()) SendPlayerUpdate(p.player_id, p.x, p.y);
+    for (const auto& p : players)
+        if (p.player_id != player_->GetID())
+            SendPlayerUpdate(p.player_id, p.x, p.y, p.facing);
 }
 void GameSession::BroadcastPlayerJoined() {
-    server_->BroadcastToOthers(player_->GetID(), [this](auto s){ s->SendPlayerUpdate(player_->GetID(), player_->GetX(), player_->GetY()); });
+    server_->BroadcastToOthers(player_->GetID(), [this](auto s){ s->SendPlayerUpdate(player_->GetID(), player_->GetX(), player_->GetY(), player_->GetFacing()); });
 }
 /*
 void GameSession::BroadcastPlayerMoved() {

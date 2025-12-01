@@ -18,7 +18,7 @@ LuaGameEngine::~LuaGameEngine() {
     }
 }
 
-void LuaGameEngine::OnPlayerMoved(uint32_t player_id, int x, int y) {
+void LuaGameEngine::OnPlayerMoved(uint32_t player_id, int x, int y, uint8_t direction) {
     // 1. Lock the Mutex (Thread Safety)
     std::lock_guard<std::mutex> lock(lua_mutex_);
 
@@ -30,7 +30,7 @@ void LuaGameEngine::OnPlayerMoved(uint32_t player_id, int x, int y) {
         if (on_move.valid()) {
             // Pass data to Lua
             // We use sol::protected_function_result to catch Lua errors without crashing C++
-            auto result = on_move(player_id, x, y);
+            auto result = on_move(player_id, x, y, direction);
 
             if (!result.valid()) {
                 sol::error err = result;

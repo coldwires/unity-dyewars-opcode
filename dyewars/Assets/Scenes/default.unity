@@ -418,6 +418,11 @@ MonoBehaviour:
   cellSize: 1
   gridCellSprite: {fileID: 10907, guid: 0000000000000000f000000000000000, type: 0}
   gridColor: {r: 1, g: 1, b: 1, a: 0.1}
+  directionSprites:
+  - {fileID: -1880120661550918566, guid: 75220ec320e315f4bbc8d98faf677d09, type: 3}
+  - {fileID: -2138889809964615276, guid: 75220ec320e315f4bbc8d98faf677d09, type: 3}
+  - {fileID: 5170923571141632267, guid: 75220ec320e315f4bbc8d98faf677d09, type: 3}
+  - {fileID: 4988299623686018579, guid: 75220ec320e315f4bbc8d98faf677d09, type: 3}
 --- !u!4 &1959429672
 Transform:
   m_ObjectHideFlags: 0
