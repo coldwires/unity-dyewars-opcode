@@ -1,5 +1,6 @@
 #include "include/server/GameSession.h"
 #include "include/server/GameServer.h" // Needed here to call Server methods
+#include "include/server/BandwithMonitor.h"
 
 GameSession::GameSession(asio::ip::tcp::socket socket, std::shared_ptr<LuaGameEngine> engine,
                          GameServer* server, uint32_t player_id)
@@ -111,6 +112,10 @@ void GameSession::HandlePacket(const std::vector<uint8_t>& data) {
 void GameSession::SendPacket(const Packet& pkt) {
     auto self(shared_from_this());
     auto data = std::make_shared<std::vector<uint8_t>>(pkt.ToBytes());
+
+    // Track bandwidth
+    BandwidthMonitor::Instance().RecordOutgoing(data->size());
+
     asio::async_write(socket_, asio::buffer(*data),
                       [this, self, data](std::error_code ec, std::size_t) {});
 }
@@ -187,6 +192,9 @@ void GameSession::BroadcastPlayerLeft() {
 }
 
 void GameSession::RawSend(std::shared_ptr<std::vector<uint8_t>> data) {
+    // Track bandwidth
+    BandwidthMonitor::Instance().RecordOutgoing(data->size());
+
     auto self(shared_from_this());
     asio::async_write(socket_, asio::buffer(*data),
                       [this, self, data](std::error_code ec, std::size_t) {

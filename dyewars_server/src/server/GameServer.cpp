@@ -1,5 +1,6 @@
 #include "include/server/GameServer.h"
 #include <iostream>
+#include "include/server/BandwithMonitor.h"
 
 GameServer::GameServer(asio::io_context& io_context, short port)
         : acceptor_(io_context, asio::ip::tcp::endpoint(asio::ip::address::from_string("192.168.1.3"), port)),
@@ -32,6 +33,10 @@ void GameServer::RunGameLoop() {
 
         // 1. Process Logic
         ProcessUpdates();
+
+        // Update bandwidth stats every tick, prints every second
+        BandwidthMonitor::Instance().Tick();
+
 
         // 2. Sleep until next tick
         auto end_time = std::chrono::steady_clock::now();
@@ -153,6 +158,7 @@ void GameServer::StartConsole() {
             std::cout << "Server> ";
             std::getline(std::cin, cmd);
             if (cmd == "r") lua_engine_->ReloadScripts();
+            else if (cmd == "bandwidth") std::cout << BandwidthMonitor::Instance().GetStats() << std::endl;
             else if (cmd == "q") exit(0);
         }
     }).detach();
