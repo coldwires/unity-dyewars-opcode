@@ -19,6 +19,7 @@ namespace DyeWars.Network.Connection
         private NetworkStream stream;
         private Thread receiveThread;
         private volatile bool isConnected = false;
+        private byte[] lastSentPacket = null;
 
         // Callback for when data is received (called on background thread!)
         public event Action<byte[]> OnPacketReceived;
@@ -27,6 +28,7 @@ namespace DyeWars.Network.Connection
 
         // Public state
         public bool IsConnected => isConnected;
+        public byte[] LastSentPacket => lastSentPacket;
 
         // ========================================================================
         // CONNECTION MANAGEMENT
@@ -112,6 +114,7 @@ namespace DyeWars.Network.Connection
 
             try
             {
+                lastSentPacket = data;
                 stream.Write(data, 0, data.Length);
                 stream.Flush();
             }

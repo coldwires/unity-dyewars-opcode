@@ -18,8 +18,8 @@ add_executable(DyeWarsServer src/main.cpp
         include/server/GameServer.h
         include/lua/LuaEngine.h
         src/lua/LuaEngine.cpp
-        src/server/GameSession.cpp
-        include/server/GameSession.h
+        src/server/ClientConnection.cpp
+        include/server/ClientConnection.h
         include/server/GameMap.h
         src/server/GameMap.cpp
         include/server/Player.h

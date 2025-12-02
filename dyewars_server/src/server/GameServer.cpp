@@ -4,8 +4,8 @@
 
 GameServer::GameServer(asio::io_context& io_context, short port)
         : acceptor_(io_context, asio::ip::tcp::endpoint(asio::ip::address::from_string("192.168.1.3"), port)),
-          lua_engine_(std::make_shared<LuaGameEngine>()),
-          next_player_id_(1) {
+          lua_engine_(std::make_shared<LuaGameEngine>())
+          {
 
     // Initialize Map 10x10
     game_map_ = std::make_unique<GameMap>(10, 10);
@@ -49,11 +49,10 @@ void GameServer::RunGameLoop() {
 }
 
 void GameServer::ProcessUpdates() {
-    std::cout << " Player Moving: 2" << std::endl;
-    // Lock logic just long enough to grab data
     std::vector<PlayerData> moving_players;
-    std::vector<std::shared_ptr<GameSession>> all_receivers;
+    std::vector<std::shared_ptr<ClientConnection>> all_receivers;
 
+    // Lock logic just long enough to grab data
     {
         std::lock_guard<std::mutex> lock(sessions_mutex_);
         for (auto& pair : sessions_) {
@@ -68,13 +67,10 @@ void GameServer::ProcessUpdates() {
         }
     }
 
-    std::cout << " Player Moving: 3" << std::endl;
     if (moving_players.empty()) return;
 
-    std::cout << " Player Moving: 4" << std::endl;
     // Now call Lua OUTSIDE the lock
     for (const auto& data : moving_players) {
-        std::cout << " Player Moving: " << std::endl;
         lua_engine_->OnPlayerMoved(data.player_id, data.x, data.y, data.facing);
     }
 
@@ -114,14 +110,14 @@ void GameServer::ProcessUpdates() {
     }
 }
 
-void GameServer::BroadcastToOthers(uint32_t exclude_id, std::function<void(std::shared_ptr<GameSession>)> action) {
+void GameServer::BroadcastToOthers(uint32_t exclude_id, std::function<void(std::shared_ptr<ClientConnection>)> action) {
     std::lock_guard<std::mutex> lock(sessions_mutex_);
     for (auto& pair : sessions_) {
         if (pair.first != exclude_id) action(pair.second);
     }
 }
 
-void GameServer::BroadcastToAll(std::function<void(std::shared_ptr<GameSession>)> action) {
+void GameServer::BroadcastToAll(std::function<void(std::shared_ptr<ClientConnection>)> action) {
     std::lock_guard<std::mutex> lock(sessions_mutex_);
     for (auto& pair : sessions_) action(pair.second);
 }
@@ -138,19 +134,46 @@ void GameServer::RemoveSession(uint32_t player_id) {
     sessions_.erase(player_id);
 }
 
+uint32_t GameServer::GenerateUniquePlayerID(){
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+
+    uint32_t id;
+    int attempts = 0;
+    const int max_attempts = 150;   //Safety Limit
+
+    do{
+        id = id_dist_(rng_);
+        attempts++;
+        if(!sessions_.contains(id))
+            return id;
+    } while (attempts < max_attempts);
+
+    // Fallback: this should basically never happen with 4 billion possible IDs
+    // and only ~250 players, but safety first
+    throw std::runtime_error("Failed to generate unique player ID");
+}
+
 void GameServer::StartAccept() {
     acceptor_.async_accept([this](std::error_code ec, asio::ip::tcp::socket socket) {
         if (!ec) {
-            uint32_t id = next_player_id_++;
-            auto session = std::make_shared<GameSession>(std::move(socket), lua_engine_, this, id);
-            {
-                std::lock_guard<std::mutex> lock(sessions_mutex_);
-                sessions_[id] = session;
-            }
+            uint32_t id = GenerateUniquePlayerID();
+            auto session = std::make_shared<ClientConnection>(
+                    std::move(socket),
+                    lua_engine_,
+                    this,
+                    id);
+
+            // Session will call RegisterSession() after successful handshake
             session->Start();
         }
         StartAccept();
     });
+}
+
+void GameServer::RegisterSession(std::shared_ptr<ClientConnection> session) {
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+    sessions_[session->GetPlayerID()] = session;
+    std::cout << "Player " << session->GetPlayerID() << " registered (handshake complete)" << std::endl;
 }
 
 void GameServer::StartConsole() {

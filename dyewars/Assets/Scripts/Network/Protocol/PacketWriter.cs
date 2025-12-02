@@ -3,10 +3,9 @@
 // Handles the packet framing (magic header + size) automatically.
 //
 // Usage:
-//   var packet = PacketWriter.CreatePacket(opcode, (writer) => {
-//       writer.WriteU32(playerId);
-//       writer.WriteU16(x);
-//       writer.WriteU16(y);
+//   var packet = PacketWriter.CreatePacket(Opcode.C_Move, (writer) => {
+//       writer.WriteU8(direction);
+//       writer.WriteU8(facing);
 //   });
 
 using System;
@@ -16,10 +15,6 @@ namespace DyeWars.Network.Protocol
 {
     public static class PacketWriter
     {
-        // Magic header bytes that start every packet
-        private const byte MAGIC_1 = 0x11;
-        private const byte MAGIC_2 = 0x00;
-
         /// <summary>
         /// Create a complete packet with header, size, and payload.
         /// </summary>
@@ -28,21 +23,22 @@ namespace DyeWars.Network.Protocol
         /// <returns>Complete packet ready to send.</returns>
         public static byte[] CreatePacket(byte opcode, Action<PayloadBuilder> writePayload = null)
         {
+            // 1. Build the payload (opcode + any additional data)
             var builder = new PayloadBuilder();
             builder.WriteU8(opcode);
             writePayload?.Invoke(builder);
 
+            // 2. Get the payload bytes
             var payload = builder.ToArray();
-            var packet = new byte[4 + payload.Length];
+            
+            // 3. Create packet buffer: 4 bytes header + payload
+            var packet = new byte[PacketHeader.HeaderSize + payload.Length];
 
-            // Write header
-            packet[0] = MAGIC_1;
-            packet[1] = MAGIC_2;
-            packet[2] = (byte)((payload.Length >> 8) & 0xFF);
-            packet[3] = (byte)(payload.Length & 0xFF);
+            // 4. Write header using centralized constants (0x11 0x68 + size)
+            PacketHeader.WriteHeader(packet, (ushort)payload.Length);
 
-            // Write payload
-            Array.Copy(payload, 0, packet, 4, payload.Length);
+            // 5. Copy payload after header
+            Array.Copy(payload, 0, packet, PacketHeader.HeaderSize, payload.Length);
 
             return packet;
         }
@@ -57,6 +53,7 @@ namespace DyeWars.Network.Protocol
 
         /// <summary>
         /// Helper class for building packet payloads.
+        /// Mutable: we add bytes to it as we build the payload.
         /// </summary>
         public class PayloadBuilder
         {
@@ -69,8 +66,8 @@ namespace DyeWars.Network.Protocol
 
             public void WriteU16(ushort value)
             {
-                data.Add((byte)((value >> 8) & 0xFF));
-                data.Add((byte)(value & 0xFF));
+                data.Add((byte)((value >> 8) & 0xFF));  // High byte first (big-endian)
+                data.Add((byte)(value & 0xFF));         // Low byte
             }
 
             public void WriteU32(uint value)
@@ -91,17 +88,23 @@ namespace DyeWars.Network.Protocol
                 WriteU32((uint)value);
             }
 
+            public void WriteBytes(byte[] bytes)
+            {
+                data.AddRange(bytes);
+            }
+
             public byte[] ToArray()
             {
                 return data.ToArray();
             }
         }
     }
+}
 
     /// <summary>
     /// Packet opcodes - centralized definition of all packet types.
     /// </summary>
-    public static class PacketOpcode
+    public static class PacketOpcodez
     {
         // Client -> Server
         public const byte Move = 0x01;
@@ -116,4 +119,3 @@ namespace DyeWars.Network.Protocol
         public const byte FacingUpdate = 0x15;
         public const byte BatchUpdate = 0x20;
     }
-}

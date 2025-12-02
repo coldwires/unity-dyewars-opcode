@@ -25,6 +25,21 @@ namespace DyeWars.Network.Outbound
             this.connection = connection;
         }
 
+        /// <summary>
+        /// Send the handshake packet. Must be called immediately after connecting.
+        /// </summary>
+        public void SendHandshake()
+        {
+            var packet = PacketWriter.CreatePacket(Opcode.C_Handshake, writer =>
+            {
+                writer.WriteU16(PacketHeader.ProtocolVersion);
+                writer.WriteU32(PacketHeader.ClientMagic);
+            });
+
+            connection.SendRaw(packet);
+            Debug.Log("PacketSender: Handshake sent");
+        }
+        
         // ========================================================================
         // MOVEMENT PACKETS (0x01 - 0x0F)
         // ========================================================================

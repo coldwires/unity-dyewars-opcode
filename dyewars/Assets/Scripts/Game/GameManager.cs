@@ -109,7 +109,7 @@ namespace DyeWars.Game
         {
             if (!showDebugInfo) return;
 
-            GUILayout.BeginArea(new Rect(10, 10, 300, 200));
+            GUILayout.BeginArea(new Rect(10, 10, 400, 300));
             GUILayout.BeginVertical("box");
 
             GUILayout.Label("=== DyeWars Debug ===");
@@ -120,6 +120,16 @@ namespace DyeWars.Game
             {
                 GUILayout.Label($"Connected: {network.IsConnected}");
                 GUILayout.Label($"Player ID: {network.LocalPlayerId}");
+                
+                //Last Sent Packet
+                var networkService = network as NetworkService;
+                if (networkService != null && networkService.LastSentPacket != null)
+                {
+                    byte[] packet = networkService.LastSentPacket;
+                    string hex = FormatPacketHex(packet);
+                    GUILayout.Label($"Last Sent ({packet.Length} bytes):");
+                    GUILayout.Label(hex);
+                }
             }
 
             // Player count
@@ -144,6 +154,26 @@ namespace DyeWars.Game
 
             GUILayout.EndVertical();
             GUILayout.EndArea();
+        }
+        
+        private string FormatPacketHex(byte[] packet)
+        {
+            if (packet == null || packet.Length == 0) return "(empty)";
+    
+            // Format as: "11 68 00 03 01 02 01"
+            System.Text.StringBuilder sb = new System.Text.StringBuilder();
+            for (int i = 0; i < packet.Length && i < 20; i++)  // Limit to 20 bytes for display
+            {
+                if (i > 0) sb.Append(" ");
+                sb.Append(packet[i].ToString("X2"));
+            }
+    
+            if (packet.Length > 20)
+            {
+                sb.Append(" ...");
+            }
+    
+            return sb.ToString();
         }
     }
 }

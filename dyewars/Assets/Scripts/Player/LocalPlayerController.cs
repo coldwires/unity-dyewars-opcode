@@ -60,6 +60,12 @@ namespace DyeWars.Player
             playerRegistry = ServiceLocator.Get<PlayerRegistry>();
             gridService = ServiceLocator.Get<GridService>();
             inputService = ServiceLocator.Get<InputService>();
+            
+            Debug.Log($"LocalPlayerController.Start - networkService: {(networkService != null ? "OK" : "NULL")}");
+            Debug.Log($"LocalPlayerController.Start - playerRegistry: {(playerRegistry != null ? "OK" : "NULL")}");
+            Debug.Log($"LocalPlayerController.Start - gridService: {(gridService != null ? "OK" : "NULL")}");
+            Debug.Log($"LocalPlayerController.Start - inputService: {(inputService != null ? "OK" : "NULL")}");
+
 
             // Get the view component on this GameObject
             playerView = GetComponent<PlayerView>();
@@ -198,9 +204,11 @@ namespace DyeWars.Player
             // Bounds check (server will also validate)
             if (gridService != null && !gridService.IsInBounds(predictedPos))
             {
+                Debug.Log("TryMove: Out of bounds");
                 return;
             }
 
+            
             // Send to server
             networkService?.SendMove(direction, currentFacing);
 

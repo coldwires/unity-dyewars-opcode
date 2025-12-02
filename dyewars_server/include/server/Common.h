@@ -2,8 +2,48 @@
 #include <vector>
 #include <cstdint>
 #include <string>
+
 using std::vector;
+
+// ============================================================================
+// PROTOCOL CONSTANTS - The ONE place for all protocol definitions
+// ============================================================================
+
+namespace Protocol {
+    // Packet framing
+    constexpr uint8_t MAGIC_1 = 0x11;
+    constexpr uint8_t MAGIC_2 = 0x68;
+    constexpr size_t HEADER_SIZE = 4;
+    constexpr size_t MAX_PAYLOAD_SIZE = 4096;
+
+    // Handshake validation
+    constexpr uint16_t VERSION = 0x0001;
+    constexpr uint32_t CLIENT_MAGIC = 0x44594557;  // "DYEW" in ASCII
+
+    // Timing
+    constexpr int HANDSHAKE_TIMEOUT_SECONDS = 5;
+
+    // Opcodes: Client -> Server
+    namespace Opcode {
+        constexpr uint8_t C_Handshake = 0x00;
+        constexpr uint8_t C_Move = 0x01;
+        constexpr uint8_t C_RequestPosition = 0x02;
+        constexpr uint8_t C_Custom = 0x03;
+        constexpr uint8_t C_Turn = 0x04;
+
+        // Server -> Client
+        constexpr uint8_t S_MyPosition = 0x10;
+        constexpr uint8_t S_CustomResponse = 0x11;
+        constexpr uint8_t S_OtherPlayerUpdate = 0x12;
+        constexpr uint8_t S_PlayerIdAssignment = 0x13;
+        constexpr uint8_t S_PlayerLeft = 0x14;
+        constexpr uint8_t S_MyFacing = 0x15;
+        constexpr uint8_t S_BatchUpdate = 0x20;
+    }
+}
+
 // --- PACKET STRUCTURE ---
+
 struct Packet {
     uint8_t header[2] = {0x11, 0x68};
     uint16_t size;

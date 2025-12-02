@@ -12,6 +12,18 @@ namespace DyeWars.Network.Protocol
     public static class PacketHeader
     {
         /// <summary>
+        /// Protocol version. Server and client must match.
+        /// Increment this when you make breaking protocol changes.
+        /// </summary>
+        public const ushort ProtocolVersion = 0x0001;
+
+        /// <summary>
+        /// Client identifier magic bytes. "DYEW" in ASCII.
+        /// Server uses this to verify it's talking to a real DyeWars client.
+        /// </summary>
+        public const uint ClientMagic = 0x44594557;  // 'D' 'Y' 'E' 'W'
+        
+        /// <summary>
         /// First magic byte. Combined with Magic2 to identify valid packets.
         /// </summary>
         public const byte Magic1 = 0x11;

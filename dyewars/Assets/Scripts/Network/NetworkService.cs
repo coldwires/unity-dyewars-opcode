@@ -30,7 +30,7 @@ namespace DyeWars.Network
         [SerializeField] private string serverHost = "127.0.0.1";
         [SerializeField] private int serverPort = 8080;
         [SerializeField] private bool connectOnStart = true;
-
+        
         // Sub-components (composition over inheritance)
         private NetworkConnection connection;
         private PacketSender sender;
@@ -40,11 +40,14 @@ namespace DyeWars.Network
         // Packets arrive on background thread, we queue them here,
         // then process them in Update() on the main thread.
         private readonly Queue<byte[]> packetQueue = new Queue<byte[]>();
+        private readonly Queue<Action> mainThreadQueue = new Queue<Action>();
         private readonly object queueLock = new object();
+        
 
         // INetworkService implementation
         public bool IsConnected => connection?.IsConnected ?? false;
         public uint LocalPlayerId { get; private set; } = 0;
+        public byte[] LastSentPacket => connection?.LastSentPacket;
 
         // ====================================================================
         // UNITY LIFECYCLE
@@ -76,9 +79,10 @@ namespace DyeWars.Network
 
         private void Update()
         {
-            // Process all queued packets on the main thread
+            
+            // Process all queued packets/actions on the main thread
             // This is where background thread data becomes safe to use
-            ProcessPacketQueue();
+            ProcessQueues();
         }
 
         private void OnDestroy()
@@ -98,7 +102,7 @@ namespace DyeWars.Network
         // ====================================================================
         // MAIN THREAD PACKET PROCESSING
         // ====================================================================
-
+        
         /// <summary>
         /// Process all packets that were queued from the background thread.
         /// This runs on the main thread in Update(), making it safe to:
@@ -106,11 +110,12 @@ namespace DyeWars.Network
         ///   - Publish events
         ///   - Modify game state
         /// </summary>
-        private void ProcessPacketQueue()
+        private void ProcessQueues()
         {
             // Lock briefly to grab all pending packets
             // We copy to a local list to minimize lock time
             List<byte[]> packetsToProcess = null;
+            List<Action> toRun = null;
 
             lock (queueLock)
             {
@@ -119,7 +124,13 @@ namespace DyeWars.Network
                     packetsToProcess = new List<byte[]>(packetQueue);
                     packetQueue.Clear();
                 }
-            }
+
+                if (mainThreadQueue.Count > 0)
+                {
+                    toRun = new List<Action>(mainThreadQueue);
+                    mainThreadQueue.Clear();
+                }
+            }   // Lock released
 
             // Process outside the lock (no blocking the background thread)
             if (packetsToProcess != null)
@@ -127,6 +138,22 @@ namespace DyeWars.Network
                 foreach (var packet in packetsToProcess)
                 {
                     handler.ProcessPacket(packet);
+                }
+            }
+
+            if (toRun != null)
+            {
+                foreach (var action in toRun)
+                {
+                    try
+                    {
+                        action();
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogError($"NetworkService: Error in queued action - {e.Message}");
+                    }
+                    
                 }
             }
         }
@@ -165,12 +192,21 @@ namespace DyeWars.Network
         /// </summary>
         private void OnConnectedFromBackground()
         {
+            // Send handshake immediately - this is safe because SendHandshake()
+            // only writes bytes to the TCP stream, no Unity objects involved
+            sender.SendHandshake();
+            
             // Queue an action to publish the event on main thread
             lock (queueLock)
             {
                 // We could use a separate action queue, but for simplicity
                 // we'll publish the event when we process packets.
                 // The connected event will naturally fire before any packets.
+                // Publish connected event 
+                mainThreadQueue.Enqueue(() =>
+                {
+                    EventBus.Publish(new ConnectedToServerEvent());
+                });
             }
 
             Debug.Log("NetworkService: Connected (from background thread)");
@@ -191,12 +227,6 @@ namespace DyeWars.Network
         public void Connect(string host, int port)
         {
             connection.Connect(host, port);
-
-            // Publish connected event (we're on main thread here if called from Start)
-            if (connection.IsConnected)
-            {
-                EventBus.Publish(new ConnectedToServerEvent());
-            }
         }
 
         public void Disconnect()

@@ -29,6 +29,11 @@ namespace DyeWars.Network.Protocol
         // ====================================================================
 
         /// <summary>
+        ///  First packet sent immediately
+        /// </summary>
+        public const byte C_Handshake = 0x00;
+        
+        /// <summary>
         /// Player requests to move in a direction.
         /// Payload: [direction:1][facing:1]
         /// </summary>
