@@ -100,6 +100,9 @@ namespace PacketReader{
     }
 
     inline uint32_t ReadUInt(const std::vector<uint8_t>& buffer, size_t& offset) {
+        if (offset + 4 > buffer.size()) {
+            throw std::out_of_range("Buffer too small for ReadUInt");
+        }
             uint32_t value = (buffer[offset] << 24) | (buffer[offset + 1] << 16) |
                              (buffer[offset + 2] << 8) | buffer[offset + 3];
             offset += 4;

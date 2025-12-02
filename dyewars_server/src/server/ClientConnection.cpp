@@ -12,7 +12,7 @@ ClientConnection::ClientConnection(asio::ip::tcp::socket socket,
         lua_engine_(engine),
         server_(server),
         player_id_(player_id),
-        handshake_timer_(socket.get_executor())
+        handshake_timer_(socket_.get_executor())
         {
             try{
                 auto endpoint = socket_.remote_endpoint();
