@@ -94,9 +94,9 @@ void LuaGameEngine::ReloadScripts() {
         lua_.collect_garbage();
         SetupLuaEnvironment();
         LoadScript(active_script_path_);
-        std::cout << "✓ Scripts reloaded successfully!\n" << std::endl;
+        std::cout << "Scripts reloaded successfully!\n" << std::endl;
     } catch (const std::exception& e) {
-        std::cout << "✗ Failed to reload: " << e.what() << "\n" << std::endl;
+        std::cout << "Failed to reload: " << e.what() << "\n" << std::endl;
     }
 }
 

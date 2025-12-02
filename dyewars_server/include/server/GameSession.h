@@ -6,6 +6,9 @@
 #include "include/server/Common.h"
 #include "include/lua/LuaEngine.h"
 #include "include/server/Player.h"
+
+inline const uint8_t HEADERBYTE_1 = 0x11;
+inline const uint8_t HEADERBYTE_2 = 0x68;
 // Forward declaration to avoid circular dependency
 class GameServer;
 
@@ -54,8 +57,6 @@ private:
     GameServer* server_;
 
     std::unique_ptr<Player> player_;
-
     uint8_t header_buffer_[4];
-
     std::atomic<bool> is_dirty_{false};
 };

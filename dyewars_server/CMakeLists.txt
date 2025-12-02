@@ -24,7 +24,7 @@ add_executable(DyeWarsServer src/main.cpp
         src/server/GameMap.cpp
         include/server/Player.h
         src/server/Player.cpp
-        include/server/BandwithMonitor.h)
+        include/server/BandwidthMonitor.h)
 
 
 # Link libraries

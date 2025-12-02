@@ -1,6 +1,6 @@
 #include "include/server/GameSession.h"
 #include "include/server/GameServer.h" // Needed here to call Server methods
-#include "include/server/BandwithMonitor.h"
+#include "include/server/BandwidthMonitor.h"
 
 GameSession::GameSession(asio::ip::tcp::socket socket, std::shared_ptr<LuaGameEngine> engine,
                          GameServer* server, uint32_t player_id)
@@ -28,7 +28,7 @@ void GameSession::ReadPacketHeader() {
                              BroadcastPlayerLeft();
                              return;
                          }
-                         if (header_buffer_[0] == 0x11 && header_buffer_[1] == 0x68) {
+                         if (header_buffer_[0] == HEADERBYTE_1 && header_buffer_[1] == HEADERBYTE_2) {
                              uint16_t size = (header_buffer_[2] << 8) | header_buffer_[3];
                              if (size > 0 && size < 4096) ReadPacketPayload(size);
                              else ReadPacketHeader();

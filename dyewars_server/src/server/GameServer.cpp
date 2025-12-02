@@ -1,6 +1,6 @@
 #include "include/server/GameServer.h"
 #include <iostream>
-#include "include/server/BandwithMonitor.h"
+#include "include/server/BandwidthMonitor.h"
 
 GameServer::GameServer(asio::io_context& io_context, short port)
         : acceptor_(io_context, asio::ip::tcp::endpoint(asio::ip::address::from_string("192.168.1.3"), port)),
@@ -49,6 +49,7 @@ void GameServer::RunGameLoop() {
 }
 
 void GameServer::ProcessUpdates() {
+    std::cout << " Player Moving: 2" << std::endl;
     // Lock logic just long enough to grab data
     std::vector<PlayerData> moving_players;
     std::vector<std::shared_ptr<GameSession>> all_receivers;
@@ -67,12 +68,13 @@ void GameServer::ProcessUpdates() {
         }
     }
 
-
+    std::cout << " Player Moving: 3" << std::endl;
     if (moving_players.empty()) return;
 
-
+    std::cout << " Player Moving: 4" << std::endl;
     // Now call Lua OUTSIDE the lock
     for (const auto& data : moving_players) {
+        std::cout << " Player Moving: " << std::endl;
         lua_engine_->OnPlayerMoved(data.player_id, data.x, data.y, data.facing);
     }
 
