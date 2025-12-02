@@ -14,10 +14,20 @@ public class NetworkManager : MonoBehaviour
     private Thread receiveThread;
     private bool isConnected = false;
     
+    private float timeSinceKeyRelease = 999f;
+    private float capturedTimeSinceRelease = 999f;
+    private int lastDirection = -1;
+    private bool directionChangedThisFrame = false;
+
+    
     // Local player data
     public uint MyPlayerID { get; private set; } = 0;
     public Vector2Int MyPosition { get; private set; } = new Vector2Int(0, 0);
     public int MyFacing { get; private set; }
+
+    private PlayerController localPlayerController;
+    private bool canMove = false;
+    
     
     
     // Other players data
@@ -54,6 +64,56 @@ public class NetworkManager : MonoBehaviour
                             (payload[offset + 2] << 8) | payload[offset + 3]);
         offset += 4;
         return value;
+    }
+
+    public void SetLocalPlayerController(PlayerController controller)
+    {
+        localPlayerController = controller;
+        localPlayerController.OnMoveComplete += OnLocalMoveComplete;
+        localPlayerController.OnQueuedDirectionReady += OnQueuedDirectionReady;
+    }
+
+    private void OnLocalMoveComplete()
+    {
+        canMove = true;
+    }
+    
+    private void OnQueuedDirectionReady(int queuedDir)
+    {
+        // Get current key held
+        int currentDirection = -1;
+        if (Keyboard.current != null)
+        {
+            if (Keyboard.current.upArrowKey.isPressed) currentDirection = 0;
+            else if (Keyboard.current.rightArrowKey.isPressed) currentDirection = 1;
+            else if (Keyboard.current.downArrowKey.isPressed) currentDirection = 2;
+            else if (Keyboard.current.leftArrowKey.isPressed) currentDirection = 3;
+        }
+    
+        // Decide which direction to use
+        int directionToUse;
+        if (currentDirection == -1)
+        {
+            // No key held, use queued direction
+            directionToUse = queuedDir;
+        }
+        else if (currentDirection == queuedDir)
+        {
+            // Holding the queued direction, use it
+            directionToUse = queuedDir;
+        }
+        else
+        {
+            // Holding different key, use that instead
+            directionToUse = currentDirection;
+        }
+    
+        // Execute the turn (with 0ms since it was queued during movement)
+        if (directionToUse != MyFacing)
+        {
+            SendTurnCommand(directionToUse);
+            localPlayerController.SetFacing(directionToUse, 0f);  // 0ms = seamless
+        }
     }
     
     void Start()
@@ -94,23 +154,72 @@ public class NetworkManager : MonoBehaviour
                 mainThreadActions.Dequeue()?.Invoke();
             }
         }
-
-        // Handle input
-        if (isConnected && Keyboard.current != null)
+        
+        // Check if any arrow key is held
+        
+        // Get current direction (-1 if no key held)
+        int currentDirection = -1;
+        if (Keyboard.current != null)
         {
-            if (Keyboard.current.upArrowKey.wasPressedThisFrame)
-                HandleDirectionInput(0);
-            else if (Keyboard.current.rightArrowKey.wasPressedThisFrame)
-                HandleDirectionInput(1);
-            else if (Keyboard.current.downArrowKey.wasPressedThisFrame)
-                HandleDirectionInput(2);
-            else if (Keyboard.current.leftArrowKey.wasPressedThisFrame)
-                HandleDirectionInput(3);
+            if (Keyboard.current.upArrowKey.isPressed) currentDirection = 0;
+            else if (Keyboard.current.rightArrowKey.isPressed) currentDirection = 1;
+            else if (Keyboard.current.downArrowKey.isPressed) currentDirection = 2;
+            else if (Keyboard.current.leftArrowKey.isPressed) currentDirection = 3;
+        }
+
+        bool isKeyHeld = currentDirection != -1;
+
+        
+        
+        // Detect direction change
+        directionChangedThisFrame = (currentDirection != -1 && currentDirection != lastDirection);
+    
+        // Capture time ONLY when direction changes
+        if (directionChangedThisFrame)
+        {
+            capturedTimeSinceRelease = timeSinceKeyRelease;
+            Debug.Log($"Direction → {currentDirection}, time since release: {capturedTimeSinceRelease * 1000f}ms");
+        }
+
+        
+       
+
+        if (isKeyHeld)
+        {
+            timeSinceKeyRelease = 0f;
+        }
+        else
+        {
+            timeSinceKeyRelease += Time.deltaTime;
+        }
+        lastDirection = currentDirection;
+        
+        // Handle input
+        if (isConnected && currentDirection != -1)
+        {
+            HandleDirectionInput(currentDirection, capturedTimeSinceRelease);
         }
     }
 
-    private void HandleDirectionInput(int direction)
+    private void HandleDirectionInput(int direction, float timeSinceRelease)
     {
+        // Finish moves first
+        if (localPlayerController == null)
+            return;
+        
+        // If moving, queue the direction instead
+        if (localPlayerController.IsMoving)
+        {
+            if (direction != MyFacing)
+            {
+                localPlayerController.QueueDirection(direction);
+            }
+            return;
+        }
+    
+        if (localPlayerController.IsBusy)
+            return;
+        
         if (MyFacing == direction)
         {
             //if we're facing this way, send a move
@@ -119,6 +228,7 @@ public class NetworkManager : MonoBehaviour
         else
         {
             SendTurnCommand(direction);
+            localPlayerController.SetFacing(direction, timeSinceRelease);
         }
     }
 
@@ -136,6 +246,7 @@ public class NetworkManager : MonoBehaviour
     {
         byte[] message = new byte[] { 0x01, (byte)direction, (byte)MyFacing };
         SendMessage(message);
+        
         // 2. CLIENT-SIDE PREDICTION (Move immediately!)
         Vector2Int predictedPos = MyPosition;
 
@@ -146,10 +257,17 @@ public class NetworkManager : MonoBehaviour
         else if (direction == 2) predictedPos.y -= 1; // DOWN
         else if (direction == 3) predictedPos.x -= 1; // LEFT
 
+        
         // Simple bounds check (optional, but prevents visual glitches)
+        // This will be refactored into my map bounds/data
         if (predictedPos.x >= 0 && predictedPos.x < 10 && 
             predictedPos.y >= 0 && predictedPos.y < 10)
         {
+            if (localPlayerController != null)
+            {
+                localPlayerController.MoveTo(predictedPos);
+            }
+            
             MyPosition = predictedPos;
             OnMyPositionUpdated?.Invoke(MyPosition);
         }
@@ -245,19 +363,34 @@ public class NetworkManager : MonoBehaviour
                     
                     lock (queueLock)
                     {
-                        mainThreadActions.Enqueue(() => {
-                            // Only update if the server disagrees with our prediction
-                            if (MyPosition.x != x || MyPosition.y != y)
+                        mainThreadActions.Enqueue(() =>
+                        {
+                            Vector2Int serverPos = new Vector2Int(x, y);
+                            
+                            // How far off are we
+                            int dx = Mathf.Abs(MyPosition.x - x);
+                            int dy = Mathf.Abs(MyPosition.y - y);
+
+                            if (dx > 1 || dy > 1) //more than 1 tile
                             {
-                                Debug.Log($"Correction: Snapped to ({x}, {y})");
-                                MyPosition = new Vector2Int(x, y);
-                                OnMyPositionUpdated?.Invoke(MyPosition);
+                                // Big mismatch - snap immediately
+                                Debug.Log($"Big Correction: Snapping to ({x},{y})");
+                                localPlayerController?.SnapToPosition(serverPos);
+                            } else if (dx > 0 || dy > 0)
+                            {
+                                // Small mismatch - lerp to correct position
+                                Debug.Log($"Small correction: Lerping to ({x}, {y})");
+                                localPlayerController?.MoveTo(serverPos);
                             }
+                            
+                            MyPosition = serverPos;
+                            OnMyPositionUpdated?.Invoke(MyPosition);
 
                             if (MyFacing != facing)
                             {
-                                Debug.Log($"Facing Correction: {facing}");
                                 MyFacing = facing;
+                                Debug.Log($"Facing Correction: {facing}");
+                                localPlayerController.SetFacing(facing);
                                 OnMyFacingUpdated?.Invoke(MyFacing);
                             }
                         });

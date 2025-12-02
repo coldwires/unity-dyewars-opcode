@@ -55,17 +55,34 @@ public:
     uint64_t GetAvgBytesPerSecond() const { return static_cast<uint64_t>(avg_bytes_per_second_); }
     uint64_t GetPacketsPerSecond() const { return packets_per_second_; }
 
+    std::string FormatBytes(uint64_t bytes) const {
+        char buf[64];
+
+        if (bytes < 1024) {
+            snprintf(buf, sizeof(buf), "%llu B", (unsigned long long)bytes);
+        } else if (bytes < 1024 * 1024) {
+            snprintf(buf, sizeof(buf), "%.2f KB", bytes / 1024.0);
+        } else if (bytes < 1024 * 1024 * 1024) {
+            snprintf(buf, sizeof(buf), "%.2f MB", bytes / (1024.0 * 1024.0));
+        } else {
+            snprintf(buf, sizeof(buf), "%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0));
+        }
+
+        return std::string(buf);
+    }
     std::string GetStats() const {
         char buf[256];
         snprintf(buf, sizeof(buf),
-                 "OUT: %llu B/s (avg: %llu) | %llu pkt/s | Total: %.2f MB",
-                 (unsigned long long)bytes_per_second_out_,
-                 (unsigned long long)avg_bytes_per_second_,
+                 "OUT: %s/s (avg: %s) | %llu pkt/s | Total: %s",
+                 FormatBytes(bytes_per_second_out_).c_str(),
+                 FormatBytes(static_cast<uint64_t>(avg_bytes_per_second_)).c_str(),
                  (unsigned long long)packets_per_second_,
-                 total_bytes_out_.load() / (1024.0 * 1024.0)
+                 FormatBytes(total_bytes_out_.load()).c_str()
         );
         return std::string(buf);
     }
+
+
 
 private:
     BandwidthMonitor() : last_tick_(std::chrono::steady_clock::now()) {}

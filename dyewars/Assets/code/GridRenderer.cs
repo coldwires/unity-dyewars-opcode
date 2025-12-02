@@ -40,8 +40,12 @@ public class MultiplayerGridRenderer : MonoBehaviour
         {
             localPlayerInstance = Instantiate(localPlayerPrefab);
             localPlayerInstance.name = $"LocalPlayer_{playerId}";
-            UpdateLocalPlayerPosition();
             
+            // Get the PlayerController and give it to NetworkManager
+            PlayerController controller = localPlayerInstance.GetComponent<PlayerController>();
+            networkManager.SetLocalPlayerController(controller);
+            
+            UpdateLocalPlayerPosition();
             OnMyFacingUpdated(networkManager.MyFacing);
         }
     }
