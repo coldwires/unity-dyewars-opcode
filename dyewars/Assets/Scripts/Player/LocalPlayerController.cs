@@ -79,8 +79,8 @@ namespace DyeWars.Player
         private void OnEnable()
         {
             EventBus.Subscribe<DirectionInputEvent>(OnDirectionInput);
-            EventBus.Subscribe<PlayerPositionChangedEvent>(OnPositionChanged);
-            EventBus.Subscribe<PlayerFacingChangedEvent>(OnFacingChanged);
+            EventBus.Subscribe<LocalPlayerPositionCorrectedEvent>(OnLocalPlayerPositionCorrected);
+            EventBus.Subscribe<LocalPlayerFacingChangedEvent>(OnLocalPlayerFacingChanged);
         }
         
         /// <summary>
@@ -104,8 +104,8 @@ namespace DyeWars.Player
         private void OnDisable()
         {
             EventBus.Unsubscribe<DirectionInputEvent>(OnDirectionInput);
-            EventBus.Unsubscribe<PlayerPositionChangedEvent>(OnPositionChanged);
-            EventBus.Unsubscribe<PlayerFacingChangedEvent>(OnFacingChanged);
+            EventBus.Unsubscribe<LocalPlayerPositionCorrectedEvent>(OnLocalPlayerPositionCorrected);
+            EventBus.Unsubscribe<LocalPlayerFacingChangedEvent>(OnLocalPlayerFacingChanged);
         }
 
         private void Update()
@@ -126,12 +126,10 @@ namespace DyeWars.Player
             HandleDirectionInput(evt.Direction, evt.TimeSinceRelease);
         }
 
-        private void OnPositionChanged(PlayerPositionChangedEvent evt)
+        private void OnLocalPlayerPositionCorrected(LocalPlayerPositionCorrectedEvent evt)
         {
-            if (!evt.IsLocalPlayer) return;
 
             // Server correction
-            if (evt.IsCorrection)
             {
                 int dx = Mathf.Abs(currentPosition.x - evt.Position.x);
                 int dy = Mathf.Abs(currentPosition.y - evt.Position.y);
@@ -150,10 +148,8 @@ namespace DyeWars.Player
             }
         }
 
-        private void OnFacingChanged(PlayerFacingChangedEvent evt)
+        private void OnLocalPlayerFacingChanged(LocalPlayerFacingChangedEvent evt)
         {
-            if (!evt.IsLocalPlayer) return;
-
             if (currentFacing != evt.Facing)
             {
                 currentFacing = evt.Facing;
@@ -208,9 +204,15 @@ namespace DyeWars.Player
                 return;
             }
 
+            // If the desired tile contains a player
+            if (playerRegistry.IsPositionOccupied(predictedPos))
+            {
+                return;
+            }
+
             
             // Send to server
-            networkService?.SendMove(direction, currentFacing);
+            networkService?.Sender.SendMove(direction, currentFacing);
 
             // Client-side prediction
             currentPosition = predictedPos;
@@ -277,7 +279,7 @@ namespace DyeWars.Player
             currentFacing = direction;
 
             // Send to server
-            networkService?.SendTurn(direction);
+            networkService?.Sender.SendTurn(direction);
 
             // Update registry
             playerRegistry?.SetLocalFacing(direction);

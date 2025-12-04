@@ -14,6 +14,7 @@ using UnityEngine;
 using DyeWars.Network.Protocol;
 using DyeWars.Network.Connection;
 
+
 namespace DyeWars.Network.Outbound
 {
     public class PacketSender
@@ -30,7 +31,7 @@ namespace DyeWars.Network.Outbound
         /// </summary>
         public void SendHandshake()
         {
-            var packet = PacketWriter.CreatePacket(Opcode.C_Handshake, writer =>
+            var packet = PacketWriter.CreatePacket( Protocol.Opcode.Connection.C_Handshake_Request, writer =>
             {
                 writer.WriteU16(PacketHeader.ProtocolVersion);
                 writer.WriteU32(PacketHeader.ClientMagic);
@@ -50,7 +51,7 @@ namespace DyeWars.Network.Outbound
         /// </summary>
         public void SendMove(int direction, int facing)
         {
-            var packet = PacketWriter.CreatePacket(Opcode.C_Move, writer =>
+            var packet = PacketWriter.CreatePacket(Opcode.Movement.C_Move_Request, writer =>
             {
                 writer.WriteU8((byte)direction);
                 writer.WriteU8((byte)facing);
@@ -64,7 +65,7 @@ namespace DyeWars.Network.Outbound
         /// </summary>
         public void SendTurn(int direction)
         {
-            var packet = PacketWriter.CreatePacket(Opcode.C_Turn, writer =>
+            var packet = PacketWriter.CreatePacket(Opcode.Movement.C_Turn_Request, writer =>
             {
                 writer.WriteU8((byte)direction);
             });
@@ -76,7 +77,7 @@ namespace DyeWars.Network.Outbound
         /// </summary>
         public void SendInteract()
         {
-            var packet = PacketWriter.CreatePacket(Opcode.C_Interact);
+            var packet = PacketWriter.CreatePacket(Opcode.Movement.C_Interact_Request);
             connection.SendRaw(packet);
         }
 
@@ -89,7 +90,7 @@ namespace DyeWars.Network.Outbound
         /// </summary>
         public void SendAttack()
         {
-            var packet = PacketWriter.CreatePacket(Opcode.C_Attack);
+            var packet = PacketWriter.CreatePacket(Opcode.Combat.C_Attack_Request);
             connection.SendRaw(packet);
         }
 
@@ -98,7 +99,7 @@ namespace DyeWars.Network.Outbound
         /// </summary>
         public void SendUseSkill(ushort skillId, int targetX, int targetY)
         {
-            var packet = PacketWriter.CreatePacket(Opcode.C_UseSkill, writer =>
+            var packet = PacketWriter.CreatePacket(Opcode.Combat.C_Skill_Use_Request, writer =>
             {
                 writer.WriteU16(skillId);
                 writer.WriteU16((ushort)targetX);
@@ -116,7 +117,7 @@ namespace DyeWars.Network.Outbound
         /// </summary>
         public void SendChatMessage(byte channelId, string message)
         {
-            var packet = PacketWriter.CreatePacket(Opcode.ChatMessage, writer =>
+            var packet = PacketWriter.CreatePacket(Opcode.Chat.C_Message_Send, writer =>
             {
                 writer.WriteU8(channelId);
                 // Convert string to bytes (UTF8)
@@ -135,7 +136,7 @@ namespace DyeWars.Network.Outbound
         /// </summary>
         public void SendEmote(byte emoteId)
         {
-            var packet = PacketWriter.CreatePacket(Opcode.Emote, writer =>
+            var packet = PacketWriter.CreatePacket(Opcode.Chat.C_Emote_Send, writer =>
             {
                 writer.WriteU8(emoteId);
             });
@@ -152,7 +153,7 @@ namespace DyeWars.Network.Outbound
         public void SendPing()
         {
             uint timestamp = (uint)(Time.realtimeSinceStartup * 1000);
-            var packet = PacketWriter.CreatePacket(Opcode.Ping, writer =>
+            var packet = PacketWriter.CreatePacket(Opcode.Connection.C_Ping_Request, writer =>
             {
                 writer.WriteU32(timestamp);
             });
@@ -164,7 +165,7 @@ namespace DyeWars.Network.Outbound
         /// </summary>
         public void SendDisconnect()
         {
-            var packet = PacketWriter.CreatePacket(Opcode.Disconnect);
+            var packet = PacketWriter.CreatePacket(Opcode.Connection.C_Disconnect_Request);
             connection.SendRaw(packet);
         }
     }

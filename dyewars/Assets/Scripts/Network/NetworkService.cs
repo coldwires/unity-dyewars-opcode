@@ -30,24 +30,27 @@ namespace DyeWars.Network
         [SerializeField] private string serverHost = "127.0.0.1";
         [SerializeField] private int serverPort = 8080;
         [SerializeField] private bool connectOnStart = true;
-        
+        private volatile bool connectedToServer = false;
+
         // Sub-components (composition over inheritance)
         private NetworkConnection connection;
         private PacketSender sender;
+        public PacketSender Sender => sender;
         private PacketHandler handler;
 
         // Main thread dispatch queue
         // Packets arrive on background thread, we queue them here,
         // then process them in Update() on the main thread.
         private readonly Queue<byte[]> packetQueue = new Queue<byte[]>();
-        private readonly Queue<Action> mainThreadQueue = new Queue<Action>();
         private readonly object queueLock = new object();
-        
+
+
 
         // INetworkService implementation
         public bool IsConnected => connection?.IsConnected ?? false;
-        public uint LocalPlayerId { get; private set; } = 0;
         public byte[] LastSentPacket => connection?.LastSentPacket;
+
+        public volatile byte[] lastReceivedPacket;
 
         // ====================================================================
         // UNITY LIFECYCLE
@@ -79,7 +82,11 @@ namespace DyeWars.Network
 
         private void Update()
         {
-            
+            if (connectedToServer)
+            {
+                EventBus.Publish(new ConnectedToServerEvent());
+                connectedToServer = false;
+            }
             // Process all queued packets/actions on the main thread
             // This is where background thread data becomes safe to use
             ProcessQueues();
@@ -115,7 +122,6 @@ namespace DyeWars.Network
             // Lock briefly to grab all pending packets
             // We copy to a local list to minimize lock time
             List<byte[]> packetsToProcess = null;
-            List<Action> toRun = null;
 
             lock (queueLock)
             {
@@ -124,12 +130,6 @@ namespace DyeWars.Network
                     packetsToProcess = new List<byte[]>(packetQueue);
                     packetQueue.Clear();
                 }
-
-                if (mainThreadQueue.Count > 0)
-                {
-                    toRun = new List<Action>(mainThreadQueue);
-                    mainThreadQueue.Clear();
-                }
             }   // Lock released
 
             // Process outside the lock (no blocking the background thread)
@@ -137,23 +137,8 @@ namespace DyeWars.Network
             {
                 foreach (var packet in packetsToProcess)
                 {
+                    lastReceivedPacket = packet;
                     handler.ProcessPacket(packet);
-                }
-            }
-
-            if (toRun != null)
-            {
-                foreach (var action in toRun)
-                {
-                    try
-                    {
-                        action();
-                    }
-                    catch (Exception e)
-                    {
-                        Debug.LogError($"NetworkService: Error in queued action - {e.Message}");
-                    }
-                    
                 }
             }
         }
@@ -171,15 +156,6 @@ namespace DyeWars.Network
         /// </summary>
         private void OnPacketReceivedFromBackground(byte[] payload)
         {
-            // Check for player ID assignment (we need this for handler)
-            // This is safe because we're just reading bytes, not touching Unity
-            if (payload.Length >= 5 && payload[0] == Opcode.S_PlayerIdAssignment)
-            {
-                int offset = 1;
-                LocalPlayerId = PacketReader.ReadU32(payload, ref offset);
-                handler.SetLocalPlayerId(LocalPlayerId);
-            }
-
             // Queue for main thread processing
             lock (queueLock)
             {
@@ -194,20 +170,18 @@ namespace DyeWars.Network
         {
             // Send handshake immediately - this is safe because SendHandshake()
             // only writes bytes to the TCP stream, no Unity objects involved
+
+            //First connection means we have to send a handshake
             sender.SendHandshake();
-            
+            connectedToServer =  true;
             // Queue an action to publish the event on main thread
-            lock (queueLock)
-            {
+            //lock (queueLock)
+            //{
                 // We could use a separate action queue, but for simplicity
                 // we'll publish the event when we process packets.
                 // The connected event will naturally fire before any packets.
-                // Publish connected event 
-                mainThreadQueue.Enqueue(() =>
-                {
-                    EventBus.Publish(new ConnectedToServerEvent());
-                });
-            }
+                // Publish connected event
+            //}
 
             Debug.Log("NetworkService: Connected (from background thread)");
         }
@@ -235,21 +209,6 @@ namespace DyeWars.Network
             EventBus.Publish(new DisconnectedFromServerEvent { Reason = "Disconnected" });
         }
 
-        /// <summary>
-        /// Send a move command. Delegates to PacketSender.
-        /// </summary>
-        public void SendMove(int direction, int facing)
-        {
-            sender.SendMove(direction, facing);
-        }
-
-        /// <summary>
-        /// Send a turn command. Delegates to PacketSender.
-        /// </summary>
-        public void SendTurn(int direction)
-        {
-            sender.SendTurn(direction);
-        }
 
         // ====================================================================
         // EXTENDED API (beyond INetworkService)
@@ -266,18 +225,7 @@ namespace DyeWars.Network
         /// Send a ping to measure latency.
         /// </summary>
         public void SendPing() => sender.SendPing();
-
-        /// <summary>
-        /// Send an attack command.
-        /// </summary>
-        public void SendAttack() => sender.SendAttack();
-
-        /// <summary>
-        /// Send a chat message.
-        /// </summary>
-        public void SendChatMessage(byte channelId, string message)
-        {
-            sender.SendChatMessage(channelId, message);
-        }
+        public void SendHeartbeatResponse(){}
+        public void SendSecurityResponse(){}
     }
 }

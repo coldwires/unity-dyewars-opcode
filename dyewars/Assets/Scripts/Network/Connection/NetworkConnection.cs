@@ -19,7 +19,7 @@ namespace DyeWars.Network.Connection
         private NetworkStream stream;
         private Thread receiveThread;
         private volatile bool isConnected = false;
-        private byte[] lastSentPacket = null;
+        private volatile byte[] lastSentPacket = null;
 
         // Callback for when data is received (called on background thread!)
         public event Action<byte[]> OnPacketReceived;
@@ -155,7 +155,7 @@ namespace DyeWars.Network.Connection
                     // Read payload size
                     ushort payloadSize = PacketHeader.ReadPayloadSize(headerBuffer);
 
-                    if (payloadSize > 0)
+                    if (payloadSize > 0 && payloadSize < 4096)
                     {
                         // Read payload
                         byte[] payload = new byte[payloadSize];

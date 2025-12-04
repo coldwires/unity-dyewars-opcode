@@ -116,10 +116,11 @@ namespace DyeWars.Game
 
             // Network status
             var network = ServiceLocator.Get<INetworkService>();
+            var playerRegistry = ServiceLocator.Get<PlayerRegistry>();
             if (network != null)
             {
                 GUILayout.Label($"Connected: {network.IsConnected}");
-                GUILayout.Label($"Player ID: {network.LocalPlayerId}");
+                GUILayout.Label($"Player ID: {playerRegistry.LocalPlayer?.PlayerId}");
                 
                 //Last Sent Packet
                 var networkService = network as NetworkService;
@@ -128,6 +129,15 @@ namespace DyeWars.Game
                     byte[] packet = networkService.LastSentPacket;
                     string hex = FormatPacketHex(packet);
                     GUILayout.Label($"Last Sent ({packet.Length} bytes):");
+                    GUILayout.Label(hex);
+                }
+
+                //Last Received Packet
+                if (networkService != null && networkService.lastReceivedPacket != null)
+                {
+                    byte[] packet = networkService.lastReceivedPacket;
+                    string hex = FormatPacketHex(packet);
+                    GUILayout.Label($"Last Received ({packet.Length} bytes):");
                     GUILayout.Label(hex);
                 }
             }

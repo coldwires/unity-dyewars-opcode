@@ -1,6 +1,7 @@
 #include "include/server/ClientConnection.h"
 #include "include/server/GameServer.h" // Needed here to call Server methods
 #include "include/server/BandwidthMonitor.h"
+#include "include/server/Packets/OpCodes.h"
 #include <iomanip>
 #include <fstream>
 
@@ -80,14 +81,14 @@ void ClientConnection::HandleHandshakePacket(const std::vector<uint8_t>& data) {
     }
 
     size_t offset = 0;
-    uint8_t opcode = PacketReader::ReadByte(data, offset);
+    uint8_t opcode = Protocol::PacketReader::ReadByte(data, offset);
 
-    if (opcode != Protocol::Opcode::C_Handshake) {
+    if (opcode != Protocol::Opcode::Connection::C_Handshake_Request) {
         FailHandshake("expected handshake opcode 0x00");
         return;
     }
 
-    uint16_t version = PacketReader::ReadShort(data, offset);
+    uint16_t version = Protocol::PacketReader::ReadShort(data, offset);
     if (version != Protocol::VERSION) {
         std::ostringstream oss;
         oss << "protocol version mismatch (client: 0x" << std::hex << version
@@ -96,12 +97,11 @@ void ClientConnection::HandleHandshakePacket(const std::vector<uint8_t>& data) {
         return;
     }
 
-    uint32_t magic = PacketReader::ReadUInt(data, offset);
+    uint32_t magic = Protocol::PacketReader::ReadUInt(data, offset);
     if (magic != Protocol::CLIENT_MAGIC) {
         FailHandshake("invalid client identifier");
         return;
     }
-
     // Handshake successful!
     CompleteHandshake();
 }
@@ -134,6 +134,7 @@ void ClientConnection::FailHandshake(const std::string& reason) {
     socket_.close(ec);
 }
 void ClientConnection::Disconnect(const std::string& reason){
+    handshake_timer_.cancel();  // Cancel any pending timeout
     std::error_code ec;
     socket_.close(ec);
 }
@@ -218,13 +219,13 @@ void ClientConnection::HandlePacket(const std::vector<uint8_t>& data) {
     if (data.empty()) return;
 
     size_t offset = 0;
-    uint8_t msg_type = PacketReader::ReadByte(data, offset);//data[0];
+    uint8_t msg_type = Protocol::PacketReader::ReadByte(data, offset);//data[0];
 
     switch (msg_type) {
-        case Protocol::Opcode::C_Move: // Move
+        case Protocol::Opcode::Movement::C_Move_Request: // Move
             if (data.size() >= 3) {
-                uint8_t direction = PacketReader::ReadByte(data, offset);
-                uint8_t facing = PacketReader::ReadByte(data, offset);
+                uint8_t direction = Protocol::PacketReader::ReadByte(data, offset);
+                uint8_t facing = Protocol::PacketReader::ReadByte(data, offset);
 
                 //only move if direction matches facing
                 if(direction == facing && direction == player_->GetFacing()) {
@@ -233,8 +234,6 @@ void ClientConnection::HandlePacket(const std::vector<uint8_t>& data) {
                     bool moved = player_->AttemptMove(direction, server_->GetMap());
 
                     if (moved) {
-                        // 2. OPTIONAL: Tell Lua "Event: Player Moved"
-                        // (Only do this if you need scripts to trigger, e.g. stepping on a trap)
                         is_dirty_ = true;
                         SendPosition();
 
@@ -253,25 +252,27 @@ void ClientConnection::HandlePacket(const std::vector<uint8_t>& data) {
             }
             break;
 
-        case Protocol::Opcode::C_Turn: //Turn
+        case Protocol::Opcode::Movement::C_Turn_Request: //Turn
             if(data.size() >= 2)
             {
-                uint8_t direction = PacketReader::ReadByte(data, offset);
+                uint8_t direction = Protocol::PacketReader::ReadByte(data, offset);
                 player_->SetFacing(direction);
                 is_dirty_ = true;       //Broadcast facing change to others
                 SendFacingUpdate(player_->GetFacing());
             }
             break;
-        case Protocol::Opcode::C_RequestPosition: // Request Pos
-            SendPosition();
-            break;
-        case Protocol::Opcode::C_Custom: // Custom
+//       " case Protocol::Opcode::Movement::  C_RequestPosition: // Request Pos
+//            SendPosition();
+//            break;"
+        /*
+            case Protocol::Opcode::C_Custom: // Custom
         {
             std::vector<uint8_t> custom(data.begin() + 1, data.end());
             auto resp = lua_engine_->ProcessCustomMessage(custom);
             if (!resp.empty()) SendCustomMessage(resp);
         }
             break;
+         */
     }
 }
 
@@ -298,7 +299,7 @@ void ClientConnection::LogPacketReceived(const std::vector<uint8_t>& payload, ui
 
 // --- SENDING FUNCTIONS ---
 
-void ClientConnection::SendPacket(const Packet& pkt) {
+void ClientConnection::SendPacket(const Protocol::Packet& pkt) {
     auto self(shared_from_this());
     auto data = std::make_shared<std::vector<uint8_t>>(pkt.ToBytes());
 
@@ -310,52 +311,52 @@ void ClientConnection::SendPacket(const Packet& pkt) {
 }
 
 void ClientConnection::SendPlayerID() {
-    Packet pkt;
-    PacketWriter::WriteByte(pkt.payload, 0x13);
-    PacketWriter::WriteUInt(pkt.payload, player_->GetID());
+    Protocol::Packet pkt;
+    Protocol::PacketWriter::WriteByte(pkt.payload, 0x13);
+    Protocol::PacketWriter::WriteUInt(pkt.payload, player_->GetID());
     pkt.size = pkt.payload.size();
     SendPacket(pkt);
 }
 
 void ClientConnection::SendPosition() {
-    Packet pkt;
-    PacketWriter::WriteByte(pkt.payload, 0x10);
-    PacketWriter::WriteShort(pkt.payload, player_->GetX());
-    PacketWriter::WriteShort(pkt.payload, player_->GetY());
-    PacketWriter::WriteByte(pkt.payload, player_->GetFacing());
+    Protocol::Packet pkt;
+    Protocol::PacketWriter::WriteByte(pkt.payload, 0x10);
+    Protocol::PacketWriter::WriteShort(pkt.payload, player_->GetX());
+    Protocol::PacketWriter::WriteShort(pkt.payload, player_->GetY());
+    Protocol::PacketWriter::WriteByte(pkt.payload, player_->GetFacing());
     pkt.size = pkt.payload.size();
     SendPacket(pkt);
 }
 
 void ClientConnection::SendPlayerUpdate(uint32_t id, int x, int y, uint8_t facing) {
-    Packet pkt;
-    PacketWriter::WriteByte(pkt.payload, 0x12);
-    PacketWriter::WriteUInt(pkt.payload, id);
-    PacketWriter::WriteShort(pkt.payload, x);
-    PacketWriter::WriteShort(pkt.payload, y);
-    PacketWriter::WriteByte(pkt.payload, facing);
+    Protocol::Packet pkt;
+    Protocol::PacketWriter::WriteByte(pkt.payload, 0x12);
+    Protocol::PacketWriter::WriteUInt(pkt.payload, id);
+    Protocol::PacketWriter::WriteShort(pkt.payload, x);
+    Protocol::PacketWriter::WriteShort(pkt.payload, y);
+    Protocol::PacketWriter::WriteByte(pkt.payload, facing);
     pkt.size = pkt.payload.size();
     SendPacket(pkt);
 }
 
 void ClientConnection::SendFacingUpdate(uint8_t facing) {
-    Packet pkt;
-    PacketWriter::WriteByte(pkt.payload, 0x15);
-    PacketWriter::WriteByte(pkt.payload, facing);
+    Protocol::Packet pkt;
+    Protocol::PacketWriter::WriteByte(pkt.payload, 0x15);
+    Protocol::PacketWriter::WriteByte(pkt.payload, facing);
     pkt.size = pkt.payload.size();
     SendPacket(pkt);
 }
 
 void ClientConnection::SendPlayerLeft(uint32_t id) {
-    Packet pkt;
-    PacketWriter::WriteByte(pkt.payload, 0x14);
-    PacketWriter::WriteUInt(pkt.payload, id);
+    Protocol::Packet pkt;
+    Protocol::PacketWriter::WriteByte(pkt.payload, 0x14);
+    Protocol::PacketWriter::WriteUInt(pkt.payload, id);
     pkt.size = pkt.payload.size();
     SendPacket(pkt);
 }
 
 void ClientConnection::SendCustomMessage(const std::vector<uint8_t>& data) {
-    Packet pkt; pkt.payload = {0x11};
+    Protocol::Packet pkt; pkt.payload = {0x11};
     pkt.payload.insert(pkt.payload.end(), data.begin(), data.end());
     pkt.size = pkt.payload.size(); SendPacket(pkt);
 }
@@ -376,8 +377,9 @@ void GameSession::BroadcastPlayerMoved() {
 }*/
 
 void ClientConnection::BroadcastPlayerLeft() {
-    server_->BroadcastToAll([this](auto s){ s->SendPlayerLeft(player_->GetID()); });
-    server_->RemoveSession(player_->GetID());
+    uint32_t my_id = player_->GetID();
+    server_->RemoveSession(my_id);  // Remove first
+    server_->BroadcastToAll([my_id](auto s){ s->SendPlayerLeft(my_id); });  // Then broadcast
 }
 
 void ClientConnection::RawSend(std::shared_ptr<std::vector<uint8_t>> data) {

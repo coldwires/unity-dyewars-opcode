@@ -6,6 +6,7 @@
 #include "include/server/Common.h"
 #include "include/lua/LuaEngine.h"
 #include "include/server/Player.h"
+#include "include/server/Packets/Protocol.h"
 
 // Forward declaration to avoid circular dependency
 class GameServer;
@@ -58,7 +59,7 @@ private:
     void HandlePacket(const std::vector<uint8_t>& data);
     void SendPosition();
     void SendCustomMessage(const std::vector<uint8_t>& data);
-    void SendPacket(const Packet& pkt);
+    void SendPacket(const Protocol::Packet& pkt);
 
     void Disconnect(const std::string& reason);
 

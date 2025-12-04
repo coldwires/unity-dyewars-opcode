@@ -18,12 +18,13 @@ namespace DyeWars.Network.Inbound
 {
     public class PacketHandler
     {
-        // Track local player ID for filtering batch updates
-        private uint localPlayerId = 0;
 
-        public void SetLocalPlayerId(uint playerId)
+        //cache the service for localplayer lookup (Batch Updates)
+        private readonly INetworkService networkService;
+
+        public PacketHandler()
         {
-            localPlayerId = playerId;
+            networkService = ServiceLocator.Get<INetworkService>();
         }
 
         /// <summary>
@@ -39,38 +40,39 @@ namespace DyeWars.Network.Inbound
             switch (opcode)
             {
                 // ============================================================
-                // LOCAL PLAYER UPDATES (0x10 - 0x1F)
+                // LOCAL PLAYER UPDATES
                 // ============================================================
 
-                case Opcode.S_MyPosition:
-                    HandleMyPosition(payload, offset);
+                case Opcode.LocalPlayer.S_Position_Correction:
+                    HandleMyPositionCorrection(payload, offset);
                     break;
 
-                case Opcode.S_PlayerIdAssignment:
+                case Opcode.LocalPlayer.S_Welcome:
                     HandlePlayerIdAssignment(payload, offset);
                     break;
 
-                case Opcode.S_MyFacing:
+                case Opcode.LocalPlayer.S_Facing_Correction:
                     HandleMyFacing(payload, offset);
                     break;
 
                 // ============================================================
-                // WORLD UPDATES (0x12, 0x14, 0x20 - 0x2F)
+                // WORLD UPDATES
                 // ============================================================
 
-                case Opcode.S_OtherPlayerUpdate:
-                    HandleOtherPlayerUpdate(payload, offset);
-                    break;
+                // TODO Merge this to batchupdate
+                //case Opcode.Batch.S_RemotePlayer_Update:
+                //    HandleOtherPlayerUpdate(payload, offset);
+                //    break;
 
-                case Opcode.S_PlayerLeft:
+                case Opcode.RemotePlayer.S_Left_Game:
                     HandlePlayerLeft(payload, offset);
                     break;
 
-                case Opcode.S_BatchUpdate:
+                case Opcode.Batch.S_RemotePlayer_Update:
                     HandleBatchUpdate(payload, offset);
                     break;
 
-                case Opcode.S_PlayerJoined:
+                case Opcode.RemotePlayer.S_Joined_Game:
                     HandlePlayerJoined(payload, offset);
                     break;
 
@@ -78,35 +80,17 @@ namespace DyeWars.Network.Inbound
                 // COMBAT & EFFECTS (0x30 - 0x3F)
                 // ============================================================
 
-                case Opcode.S_PlayEffect:
-                    HandlePlayEffect(payload, offset);
-                    break;
 
-                case Opcode.S_Damage:
-                    HandleDamage(payload, offset);
-                    break;
-
-                case Opcode.S_Heal:
-                    HandleHeal(payload, offset);
-                    break;
-
-                case Opcode.S_Death:
-                    HandleDeath(payload, offset);
-                    break;
-
-                case Opcode.S_Respawn:
-                    HandleRespawn(payload, offset);
-                    break;
 
                 // ============================================================
                 // SYSTEM (0xF0 - 0xFF)
                 // ============================================================
 
-                case Opcode.Pong:
+                case Opcode.Connection.S_Pong_Response:
                     HandlePong(payload, offset);
                     break;
 
-                case Opcode.S_Kick:
+                case Opcode.System.S_Kick_Notification:
                     HandleKick(payload, offset);
                     break;
 
@@ -120,27 +104,22 @@ namespace DyeWars.Network.Inbound
         // LOCAL PLAYER HANDLERS
         // ========================================================================
 
-        private void HandleMyPosition(byte[] payload, int offset)
+        private void HandleMyPositionCorrection(byte[] payload, int offset)
         {
-            if (!PacketReader.HasBytes(payload, offset, PayloadSize.S_MyPosition - 1)) return;
+            if (!PacketReader.HasBytes(payload, offset, PayloadSize.S_LocalPlayer_Position_Correction - 1)) return;
 
             int x = PacketReader.ReadU16(payload, ref offset);
             int y = PacketReader.ReadU16(payload, ref offset);
             int facing = PacketReader.ReadU8(payload, ref offset);
 
-            Core.EventBus.Publish(new Core.PlayerPositionChangedEvent
+            Core.EventBus.Publish(new Core.LocalPlayerPositionCorrectedEvent()
             {
-                PlayerId = localPlayerId,
                 Position = new Vector2Int(x, y),
-                IsLocalPlayer = true,
-                IsCorrection = true
             });
 
-            Core.EventBus.Publish(new Core.PlayerFacingChangedEvent
+            Core.EventBus.Publish(new Core.LocalPlayerFacingChangedEvent()
             {
-                PlayerId = localPlayerId,
-                Facing = facing,
-                IsLocalPlayer = true
+                Facing = facing
             });
         }
 
@@ -149,9 +128,8 @@ namespace DyeWars.Network.Inbound
             if (!PacketReader.HasBytes(payload, offset, 4)) return;
 
             uint playerId = PacketReader.ReadU32(payload, ref offset);
-            localPlayerId = playerId;
 
-            Debug.Log($"PacketHandler: Assigned player ID {playerId}");
+            Debug.Log($"PacketHandler: Assigning player ID {playerId}");
 
             Core.EventBus.Publish(new Core.LocalPlayerIdAssignedEvent
             {
@@ -165,11 +143,9 @@ namespace DyeWars.Network.Inbound
 
             int facing = PacketReader.ReadU8(payload, ref offset);
 
-            Core.EventBus.Publish(new Core.PlayerFacingChangedEvent
+            Core.EventBus.Publish(new Core.LocalPlayerFacingChangedEvent()
             {
-                PlayerId = localPlayerId,
                 Facing = facing,
-                IsLocalPlayer = true
             });
         }
 
@@ -179,32 +155,30 @@ namespace DyeWars.Network.Inbound
 
         private void HandleOtherPlayerUpdate(byte[] payload, int offset)
         {
-            if (!PacketReader.HasBytes(payload, offset, PayloadSize.S_OtherPlayerUpdate - 1)) return;
+            if (!PacketReader.HasBytes(payload, offset, PayloadSize.S_LocalPlayer_Position_Correction - 1)) return;
 
             uint playerId = PacketReader.ReadU32(payload, ref offset);
             int x = PacketReader.ReadU16(payload, ref offset);
             int y = PacketReader.ReadU16(payload, ref offset);
             int facing = PacketReader.ReadU8(payload, ref offset);
 
-            Core.EventBus.Publish(new Core.PlayerPositionChangedEvent
+            Core.EventBus.Publish(new Core.OtherPlayerPositionChangedEvent
             {
                 PlayerId = playerId,
                 Position = new Vector2Int(x, y),
-                IsLocalPlayer = false,
                 IsCorrection = false
             });
 
-            Core.EventBus.Publish(new Core.PlayerFacingChangedEvent
+            Core.EventBus.Publish(new Core.OtherPlayerFacingChangedEvent
             {
                 PlayerId = playerId,
                 Facing = facing,
-                IsLocalPlayer = false
             });
         }
 
         private void HandlePlayerLeft(byte[] payload, int offset)
         {
-            if (!PacketReader.HasBytes(payload, offset, 4)) return;
+            if (!PacketReader.HasBytes(payload, offset, PayloadSize.S_RemotePlayer_Left_Game)) return;
 
             uint playerId = PacketReader.ReadU32(payload, ref offset);
 
@@ -222,7 +196,7 @@ namespace DyeWars.Network.Inbound
 
             for (int i = 0; i < count; i++)
             {
-                if (!PacketReader.HasBytes(payload, offset, PayloadSize.S_BatchUpdatePerPlayer)) break;
+                if (!PacketReader.HasBytes(payload, offset, PayloadSize.S_Batch_RemotePlayer_Update_PerPlayer)) break;
 
                 uint playerId = PacketReader.ReadU32(payload, ref offset);
                 int x = PacketReader.ReadU16(payload, ref offset);
@@ -230,21 +204,20 @@ namespace DyeWars.Network.Inbound
                 int facing = PacketReader.ReadU8(payload, ref offset);
 
                 // Skip our own updates (we use client-side prediction)
-                if (playerId == localPlayerId) continue;
+                //if (playerId == networkService.LocalPlayerId) continue;
 
-                Core.EventBus.Publish(new Core.PlayerPositionChangedEvent
+
+                Core.EventBus.Publish(new Core.OtherPlayerPositionChangedEvent
                 {
                     PlayerId = playerId,
                     Position = new Vector2Int(x, y),
-                    IsLocalPlayer = false,
                     IsCorrection = false
                 });
 
-                Core.EventBus.Publish(new Core.PlayerFacingChangedEvent
+                Core.EventBus.Publish(new Core.OtherPlayerFacingChangedEvent
                 {
                     PlayerId = playerId,
                     Facing = facing,
-                    IsLocalPlayer = false
                 });
             }
         }

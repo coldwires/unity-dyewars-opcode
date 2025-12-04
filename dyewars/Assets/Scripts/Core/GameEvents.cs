@@ -41,22 +41,36 @@ namespace DyeWars.Core
     /// <summary>
     /// Fired when a player's position changes (local or remote).
     /// </summary>
-    public struct PlayerPositionChangedEvent
+    public struct OtherPlayerPositionChangedEvent
     {
         public uint PlayerId;
         public Vector2Int Position;
-        public bool IsLocalPlayer;
+        public bool IsCorrection;  // True if this is a server correction
+    }
+
+    public struct LocalPlayerPositionCorrectedEvent
+    {
+        public Vector2Int Position;
+    }
+
+    public struct LocalPlayerPositionChangedEvent
+    {
+        public Vector2Int Position;
         public bool IsCorrection;  // True if this is a server correction
     }
 
     /// <summary>
     /// Fired when a player's facing direction changes.
     /// </summary>
-    public struct PlayerFacingChangedEvent
+    public struct OtherPlayerFacingChangedEvent
     {
         public uint PlayerId;
         public int Facing;
-        public bool IsLocalPlayer;
+    }
+
+    public struct LocalPlayerFacingChangedEvent
+    {
+        public int Facing;
     }
 
     /// <summary>

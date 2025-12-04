@@ -36,17 +36,25 @@ namespace DyeWars.Player
         private void OnEnable()
         {
             EventBus.Subscribe<LocalPlayerIdAssignedEvent>(OnLocalPlayerIdAssigned);
-            EventBus.Subscribe<PlayerPositionChangedEvent>(OnPlayerPositionChanged);
-            EventBus.Subscribe<PlayerFacingChangedEvent>(OnPlayerFacingChanged);
+            EventBus.Subscribe<OtherPlayerPositionChangedEvent>(OnOtherPlayerPositionChanged);
+            EventBus.Subscribe<OtherPlayerFacingChangedEvent>(OnOtherPlayerFacingChanged);
             EventBus.Subscribe<PlayerLeftEvent>(OnPlayerLeft);
+
+            EventBus.Subscribe<LocalPlayerFacingChangedEvent>(OnLocalPlayerFacingChanged);
+            EventBus.Subscribe<LocalPlayerPositionCorrectedEvent>(OnLocalPlayerPositionCorrected);
+
         }
 
         private void OnDisable()
         {
             EventBus.Unsubscribe<LocalPlayerIdAssignedEvent>(OnLocalPlayerIdAssigned);
-            EventBus.Unsubscribe<PlayerPositionChangedEvent>(OnPlayerPositionChanged);
-            EventBus.Unsubscribe<PlayerFacingChangedEvent>(OnPlayerFacingChanged);
+            EventBus.Unsubscribe<OtherPlayerPositionChangedEvent>(OnOtherPlayerPositionChanged);
+            EventBus.Unsubscribe<OtherPlayerFacingChangedEvent>(OnOtherPlayerFacingChanged);
             EventBus.Unsubscribe<PlayerLeftEvent>(OnPlayerLeft);
+
+            EventBus.Unsubscribe<LocalPlayerFacingChangedEvent>(OnLocalPlayerFacingChanged);
+            EventBus.Unsubscribe<LocalPlayerPositionCorrectedEvent>(OnLocalPlayerPositionCorrected);
+
         }
 
         private void OnDestroy()
@@ -61,6 +69,30 @@ namespace DyeWars.Player
         public PlayerData GetPlayer(uint playerId)
         {
             return players.TryGetValue(playerId, out var player) ? player : null;
+        }
+
+        public bool TryGetLocalPlayerID(out uint playerId)
+        {
+            if (localPlayer != null)
+            {
+                playerId = localPlayer.PlayerId;
+                return true;
+            }
+            playerId = default;
+            return false;
+        }
+
+        public bool IsPositionOccupied(Vector2Int position)
+        {
+            foreach (var player in players.Values)
+            {
+                if (player.Position == position)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         public bool HasPlayer(uint playerId)
@@ -89,11 +121,9 @@ namespace DyeWars.Player
 
             localPlayer.SetPosition(newPosition);
 
-            EventBus.Publish(new PlayerPositionChangedEvent
+            EventBus.Publish(new LocalPlayerPositionChangedEvent()
             {
-                PlayerId = localPlayer.PlayerId,
                 Position = newPosition,
-                IsLocalPlayer = true,
                 IsCorrection = false
             });
         }
@@ -104,11 +134,9 @@ namespace DyeWars.Player
 
             localPlayer.SetFacing(facing);
 
-            EventBus.Publish(new PlayerFacingChangedEvent
+            EventBus.Publish(new LocalPlayerFacingChangedEvent()
             {
-                PlayerId = localPlayer.PlayerId,
                 Facing = facing,
-                IsLocalPlayer = true
             });
         }
 
@@ -119,7 +147,6 @@ namespace DyeWars.Player
         private void OnLocalPlayerIdAssigned(LocalPlayerIdAssignedEvent evt)
         {
             Debug.Log($"PlayerRegistry: Creating local player with ID {evt.PlayerId}");
-
             localPlayer = new PlayerData(evt.PlayerId, isLocalPlayer: true);
             players[evt.PlayerId] = localPlayer;
 
@@ -131,10 +158,41 @@ namespace DyeWars.Player
             });
         }
 
-        private void OnPlayerPositionChanged(PlayerPositionChangedEvent evt)
+        private void OnLocalPlayerPositionCorrected(LocalPlayerPositionCorrectedEvent evt)
+        {
+            if (localPlayer == null) return;
+
+            int dx = Mathf.Abs(localPlayer.Position.x - evt.Position.x);
+            int dy = Mathf.Abs(localPlayer.Position.y - evt.Position.y);
+
+            if (dx > 1 || dy > 1)
+            {
+                Debug.Log($"PlayerRegistry: Large correction, snapping to {evt.Position}");
+            }
+            else if (dx > 0 || dy > 0)
+            {
+                Debug.Log($"PlayerRegistry: Small correction to {evt.Position}");
+            }
+
+            localPlayer.SetPosition(evt.Position);
+
+            EventBus.Publish(new LocalPlayerPositionChangedEvent
+            {
+                Position = evt.Position,
+                IsCorrection = true
+            });
+        }
+
+        private void OnLocalPlayerFacingChanged(LocalPlayerFacingChangedEvent evt)
+        {
+            localPlayer?.SetFacing(evt.Facing);
+        }
+
+        private void OnOtherPlayerPositionChanged(OtherPlayerPositionChangedEvent evt)
         {
             if (!players.TryGetValue(evt.PlayerId, out var player))
             {
+                // New remote player discovered
                 player = new PlayerData(evt.PlayerId, isLocalPlayer: false);
                 players[evt.PlayerId] = player;
 
@@ -148,25 +206,10 @@ namespace DyeWars.Player
                 });
             }
 
-            if (evt.IsLocalPlayer && evt.IsCorrection)
-            {
-                int dx = Mathf.Abs(player.Position.x - evt.Position.x);
-                int dy = Mathf.Abs(player.Position.y - evt.Position.y);
-
-                if (dx > 1 || dy > 1)
-                {
-                    Debug.Log($"PlayerRegistry: Large correction, snapping to {evt.Position}");
-                }
-                else if (dx > 0 || dy > 0)
-                {
-                    Debug.Log($"PlayerRegistry: Small correction to {evt.Position}");
-                }
-            }
-
             player.SetPosition(evt.Position);
         }
 
-        private void OnPlayerFacingChanged(PlayerFacingChangedEvent evt)
+        private void OnOtherPlayerFacingChanged(OtherPlayerFacingChangedEvent evt)
         {
             if (players.TryGetValue(evt.PlayerId, out var player))
             {

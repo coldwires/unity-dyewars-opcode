@@ -2,25 +2,43 @@
 #include <iostream>
 #include "include/server/BandwidthMonitor.h"
 
-GameServer::GameServer(asio::io_context& io_context, short port)
-        : acceptor_(io_context, asio::ip::tcp::endpoint(asio::ip::address::from_string("192.168.1.3"), port)),
-          lua_engine_(std::make_shared<LuaGameEngine>())
+using std::vector;
+using std::make_shared;
+using std::make_unique;
+using std::cout;
+using std::endl;
+using std::thread;
+using std::lock_guard;
+using std::mutex;
+using std::shared_ptr;
+
+
+GameServer::GameServer(asio::io_context& io_context)
+        : acceptor_(io_context,
+                    asio::ip::tcp::endpoint(asio::ip::address::from_string(Protocol::ADDRESS),
+                                            Protocol::PORT)),
+          lua_engine_(make_shared<LuaGameEngine>())
           {
 
     // Initialize Map 10x10
-    game_map_ = std::make_unique<GameMap>(10, 10);
+    game_map_ = make_unique<GameMap>(10, 10);
 
-    std::cout << "Server starting on port " << port << "..." << std::endl;
+    cout << "Server starting on port " << Protocol::PORT << "..." << endl;
     StartAccept();
     StartConsole();
 
-    game_loop_thread_ = std::thread(&GameServer::RunGameLoop, this);
+    game_loop_thread_ = thread(&GameServer::RunGameLoop, this);
 }
 
 GameServer::~GameServer() {
     server_running_ = false;
     if (game_loop_thread_.joinable()) {
         game_loop_thread_.join();
+    }
+    // Clear sessions while holding lock
+    {
+        lock_guard<mutex> lock(sessions_mutex_);
+        sessions_.clear();
     }
 }
 
@@ -49,12 +67,12 @@ void GameServer::RunGameLoop() {
 }
 
 void GameServer::ProcessUpdates() {
-    std::vector<PlayerData> moving_players;
-    std::vector<std::shared_ptr<ClientConnection>> all_receivers;
+    vector<PlayerData> moving_players;
+    vector<shared_ptr<ClientConnection>> all_receivers;
 
     // Lock logic just long enough to grab data
     {
-        std::lock_guard<std::mutex> lock(sessions_mutex_);
+       lock_guard<mutex> lock(sessions_mutex_);
         for (auto& pair : sessions_) {
             auto session = pair.second;
             all_receivers.push_back(session); // Everyone receives updates
@@ -62,45 +80,52 @@ void GameServer::ProcessUpdates() {
             if (session->IsDirty()) {
                 moving_players.push_back(session->GetPlayerData());
                 session->SetDirty(false); // Reset flag
-                PlayerData data = session->GetPlayerData();
             }
         }
     }
 
     if (moving_players.empty()) return;
 
+    ///
+    /// Authorize Movement
+    ///
+
+
     // Now call Lua OUTSIDE the lock
     for (const auto& data : moving_players) {
         lua_engine_->OnPlayerMoved(data.player_id, data.x, data.y, data.facing);
     }
 
+    // TODO: this takes every moving players data, builds one packet, and sends it to every connected player
+    // Extremely unnecessary, just a good example of packet coalescing.
+    // Will change it to send to view/etc later
+
     // --- OPTIMIZATION: PACKET COALESCING ---
     // Instead of sending N small packets, we build ONE big packet.
 
-    Packet batchPacket;
-    PacketWriter::WriteByte(batchPacket.payload, 0x20);
+    uint8_t count = static_cast<uint8_t>(moving_players.size());
+    Protocol::Packet batchPacket;
+    Protocol::PacketWriter::WriteByte(batchPacket.payload, 0x20);
 
     // We can fit about 200 player updates in a standard 1400 byte MTU packet.
     // If you have more, you'd loop this, but for now let's assume < 200 moves/tick.
-    uint8_t count = static_cast<uint8_t>(moving_players.size());
-    PacketWriter::WriteByte(batchPacket.payload, count);
+    Protocol::PacketWriter::WriteByte(batchPacket.payload, count);
 
     for (const auto& p : moving_players) {
         // Append Player ID (4 bytes)
-        PacketWriter::WriteUInt(batchPacket.payload, p.player_id);
-        // Append X, Y (1 byte each)
-        PacketWriter::WriteShort(batchPacket.payload, p.x);
-        PacketWriter::WriteShort(batchPacket.payload, p.y);
+        Protocol::PacketWriter::WriteUInt(batchPacket.payload, p.player_id);
+        // Append X, Y (2 bytes each)
+        Protocol::PacketWriter::WriteShort(batchPacket.payload, p.x);
+        Protocol::PacketWriter::WriteShort(batchPacket.payload, p.y);
         // Append Facing
-        PacketWriter::WriteByte(batchPacket.payload, p.facing);
-
+        Protocol::PacketWriter::WriteByte(batchPacket.payload, p.facing);
     }
 
     batchPacket.size = static_cast<uint16_t>(batchPacket.payload.size());
 
     // Serialize ONCE, send to ALL.
     // This is incredibly fast because we don't rebuild the vector for every client.
-    auto encoded_bytes = std::make_shared<std::vector<uint8_t>>(batchPacket.ToBytes());
+    auto encoded_bytes = make_shared<std::vector<uint8_t>>(batchPacket.ToBytes());
 
     for (auto& session : all_receivers) {
         // In a perfect world, you check 'session->GetPlayerID()'
@@ -110,15 +135,19 @@ void GameServer::ProcessUpdates() {
     }
 }
 
-void GameServer::BroadcastToOthers(uint32_t exclude_id, std::function<void(std::shared_ptr<ClientConnection>)> action) {
-    std::lock_guard<std::mutex> lock(sessions_mutex_);
-    for (auto& pair : sessions_) {
-        if (pair.first != exclude_id) action(pair.second);
+void GameServer::BroadcastToOthers(
+        uint32_t exclude_id,
+        const std::function<void(shared_ptr<ClientConnection>)> &action) {
+
+    lock_guard<mutex> lock(sessions_mutex_);
+    for (const auto& [id, conn]: sessions_) {
+        if (id != exclude_id)
+            action(conn);
     }
 }
 
-void GameServer::BroadcastToAll(std::function<void(std::shared_ptr<ClientConnection>)> action) {
-    std::lock_guard<std::mutex> lock(sessions_mutex_);
+void GameServer::BroadcastToAll(std::function<void(shared_ptr<ClientConnection>)> action) {
+    lock_guard<mutex> lock(sessions_mutex_);
     for (auto& pair : sessions_) action(pair.second);
 }
 
@@ -150,21 +179,50 @@ uint32_t GameServer::GenerateUniquePlayerID(){
 
     // Fallback: this should basically never happen with 4 billion possible IDs
     // and only ~250 players, but safety first
-    throw std::runtime_error("Failed to generate unique player ID");
+    return 0;
+    //throw std::runtime_error("Failed to generate unique player ID");
 }
 
 void GameServer::StartAccept() {
     acceptor_.async_accept([this](std::error_code ec, asio::ip::tcp::socket socket) {
         if (!ec) {
-            uint32_t id = GenerateUniquePlayerID();
+            // Attempt to generate a unique player ID
+            // This could fail if we somehow have billions of players (impossible)
+            // or if the RNG is broken. Either way, we handle it gracefully.
+            uint32_t id = 0;
+            try{
+                id = GenerateUniquePlayerID();
+            } catch (const std::exception& e) {
+                // Log the error but don't crash the server
+                std::cerr << "Failed to generate player ID: " << e.what() << std::endl;
+                std::cerr << "Rejecting connection from "
+                          << socket.remote_endpoint().address().to_string() << std::endl;
+
+                // Close this socket and continue accepting others
+                socket.close();
+                StartAccept();
+                return;
+            }
+            // Create the session. Note: the session is NOT in the sessions_ map yet.
+            // It will register itself after a successful handshake.
             auto session = std::make_shared<ClientConnection>(
                     std::move(socket),
                     lua_engine_,
                     this,
                     id);
 
-            // Session will call RegisterSession() after successful handshake
+            // Start the session's async read chain and handshake timer.
+            // The session keeps itself alive via shared_from_this() in its async callbacks.
+            // If the handshake fails or times out, the session will clean itself up.
             session->Start();
+        } else {
+            // Accept failed - this is unusual and might indicate a serious problem
+            std::cerr << "Accept failed: " << ec.message() << std::endl;
+
+            // Check if the server is shutting down
+            if (!server_running_) {
+                return;  // Don't restart accept loop during shutdown
+            }
         }
         StartAccept();
     });

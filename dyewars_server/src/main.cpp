@@ -1,10 +1,11 @@
 #include <iostream>
 #include "include/server/GameServer.h"
+#include "include/server/Common.h"
 
 int main() {
     try {
         asio::io_context io_context;
-        GameServer server(io_context, 8080);
+        GameServer server(io_context);
         io_context.run();
     } catch (std::exception& e) {
         std::cerr << "Exception: " << e.what() << std::endl;

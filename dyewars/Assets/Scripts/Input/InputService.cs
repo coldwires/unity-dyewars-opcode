@@ -9,6 +9,7 @@
 
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.SceneManagement;
 using DyeWars.Core;
 
 namespace DyeWars.Input
@@ -54,6 +55,11 @@ namespace DyeWars.Input
 
         private void ProcessInput()
         {
+            if (Keyboard.current.leftCtrlKey.isPressed && Keyboard.current.rKey.wasPressedThisFrame)
+            {
+                SceneManager.LoadScene(SceneManager.GetActiveScene().name);
+            }
+
             // Read current direction from keyboard
             currentDirection = ReadDirectionFromKeyboard();
 

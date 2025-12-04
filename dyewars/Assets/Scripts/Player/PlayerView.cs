@@ -79,8 +79,8 @@ namespace DyeWars.Player
             gridService = ServiceLocator.Get<GridService>();
 
             // Subscribe to events for this specific player
-            EventBus.Subscribe<PlayerPositionChangedEvent>(OnRemotePositionChanged);
-            EventBus.Subscribe<PlayerFacingChangedEvent>(OnRemoteFacingChanged);
+            EventBus.Subscribe<OtherPlayerPositionChangedEvent>(OnRemotePositionChanged);
+            EventBus.Subscribe<OtherPlayerFacingChangedEvent>(OnRemoteFacingChanged);
 
             UpdateSprites(currentFacing, 0);
         }
@@ -89,8 +89,8 @@ namespace DyeWars.Player
         {
             if (!isLocalPlayer)
             {
-                EventBus.Unsubscribe<PlayerPositionChangedEvent>(OnRemotePositionChanged);
-                EventBus.Unsubscribe<PlayerFacingChangedEvent>(OnRemoteFacingChanged);
+                EventBus.Unsubscribe<OtherPlayerPositionChangedEvent>(OnRemotePositionChanged);
+                EventBus.Unsubscribe<OtherPlayerFacingChangedEvent>(OnRemoteFacingChanged);
             }
         }
 
@@ -180,7 +180,6 @@ namespace DyeWars.Player
         public void SetFacing(int facing)
         {
             currentFacing = facing;
-
             if (!isMoving)
             {
                 UpdateSprites(currentFacing, 0);
@@ -191,20 +190,23 @@ namespace DyeWars.Player
         // REMOTE PLAYER EVENT HANDLERS
         // ====================================================================
 
-        private void OnRemotePositionChanged(PlayerPositionChangedEvent evt)
+        private void OnRemotePositionChanged(OtherPlayerPositionChangedEvent evt)
         {
             // Only handle events for our tracked player
             if (evt.PlayerId != trackedPlayerId) return;
-            if (evt.IsLocalPlayer) return;
 
-            MoveTo(evt.Position, 0.35f);
+            // Only animate if position actually changed
+            Vector2Int currentGridPos = gridService.WorldToGrid(transform.position);
+            if (evt.Position != currentGridPos)
+            {
+                MoveTo(evt.Position, 0.35f);
+            }
         }
 
-        private void OnRemoteFacingChanged(PlayerFacingChangedEvent evt)
+        private void OnRemoteFacingChanged(OtherPlayerFacingChangedEvent evt)
         {
             // Only handle events for our tracked player
             if (evt.PlayerId != trackedPlayerId) return;
-            if (evt.IsLocalPlayer) return;
 
             SetFacing(evt.Facing);
         }
