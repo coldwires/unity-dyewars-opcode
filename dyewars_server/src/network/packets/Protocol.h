@@ -13,7 +13,7 @@ using std::vector;
 
 namespace Protocol {
     constexpr uint32_t PORT = 8080;
-    constexpr const char *ADDRESS = "192.168.1.3";
+    constexpr const char *ADDRESS = "0.0.0.0";
 
     // Packet framing
     constexpr uint8_t MAGIC_1 = 0x11;

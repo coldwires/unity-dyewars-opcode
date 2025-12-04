@@ -30,15 +30,12 @@ GameServer::GameServer(asio::io_context& io_context)
 
     Log::Info("Server starting on port {}...",Protocol::PORT);
     StartAccept();
-    StartConsole();
 
     game_loop_thread_ = thread(&GameServer::RunGameLoop, this);
 }
 
 GameServer::~GameServer() {
-    if (!shutdown_requested_) {
         Shutdown();
-    }
 }
 
 void GameServer::RunGameLoop() {
@@ -90,10 +87,8 @@ void GameServer::Shutdown() {
     }
 
     io_context_.stop();
-
-    Log::Info("Server stopped.");
-    std::quick_exit(0);
 }
+ 
 void GameServer::ProcessUpdates() {
     vector<PlayerData> moving_players;
     vector<shared_ptr<ClientConnection>> all_receivers;
@@ -253,23 +248,4 @@ void GameServer::RegisterSession(std::shared_ptr<ClientConnection> session) {
     std::lock_guard<std::mutex> lock(sessions_mutex_);
     sessions_[session->GetPlayerID()] = session;
     std::cout << "Player " << session->GetPlayerID() << " registered (handshake complete)" << std::endl;
-}
-
-void GameServer::StartConsole() {
-    std::thread([this]() {
-        std::string cmd;
-        while (server_running_.load()) {
-            std::cout << "Server> ";
-            if (!std::getline(std::cin, cmd)) return;
-            if (!server_running_.load()) return;
-
-            if (cmd == "r") lua_engine_->ReloadScripts();
-            else if (cmd == "stats") std::cout << BandwidthMonitor::Instance().GetStats() << std::endl;
-            else if (cmd == "q" || cmd == "quit")
-            {
-                Shutdown();
-                return;
-            }
-        }
-    }).detach();
 }
