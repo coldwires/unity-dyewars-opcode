@@ -3,10 +3,10 @@
 #include <memory>
 #include <atomic>
 #include <iostream>
-#include "include/server/Common.h"
-#include "include/lua/LuaEngine.h"
-#include "include/server/Player.h"
-#include "include/server/Packets/Protocol.h"
+#include "core/Common.h"
+#include "lua/LuaEngine.h"
+#include "game/Player.h"
+#include "network/Packets/Protocol.h"
 
 // Forward declaration to avoid circular dependency
 class GameServer;
@@ -15,8 +15,10 @@ class ClientConnection : public std::enable_shared_from_this<ClientConnection> {
 public:
     ClientConnection(asio::ip::tcp::socket socket, std::shared_ptr<LuaGameEngine> engine,
                      GameServer* server, uint32_t player_id);
-
+    ~ClientConnection();
     void Start();
+    void CloseSocket();
+
     uint32_t GetPlayerID() const { return player_->GetID(); }
 
     PlayerData GetPlayerData() const {
@@ -37,6 +39,8 @@ public:
     void SendFacingUpdate(uint8_t facing);
     std::string GetClientIP() const {return client_ip_; }
     std::string GetClientHostname() const {return client_hostname_;}
+    void SendPacket(const Protocol::Packet& pkt);
+
 
 private:
     // Handshake methods
@@ -59,7 +63,6 @@ private:
     void HandlePacket(const std::vector<uint8_t>& data);
     void SendPosition();
     void SendCustomMessage(const std::vector<uint8_t>& data);
-    void SendPacket(const Protocol::Packet& pkt);
 
     void Disconnect(const std::string& reason);
 

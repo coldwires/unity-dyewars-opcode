@@ -35,57 +35,99 @@
 #include <cstdint>
 #include <string>
 
+struct OpCodeInfo {
+    uint8_t op;
+    const char* desc;
+    const char* name;
+    bool implemented = false;
+    uint8_t payloadSize = -1;   //-1 varying
+};
+
 namespace Protocol::Opcode
 {
-    // ========================================================================
-    // CONNECTION & HANDSHAKE
-    // ========================================================================
-    namespace Connection
-    {
-        // Initial connection handshake from client.
-        // Payload: [version:2][clientMagic:4]
-        constexpr uint8_t C_Handshake_Request = 0x00;
+    enum class ServerOpcode: uint8_t {
+        Handshake_Accepted = 0xF0,
 
-        // Server accepts handshake.
-        // Payload: [serverVersion:2][serverMagic:4]
-        constexpr uint8_t S_Handshake_Accepted = 0xF0;
+    };
+    namespace Server{
+        // ========================================================================
+        // CONNECTION & HANDSHAKE - 0xF0 - 0xFF
+        // ========================================================================
+        namespace Connection {
+            // Server accepts handshake.
+            // Payload: [serverVersion:2][serverMagic:4]
+            //constexpr uint8_t S_Handshake_Accepted = 0xF0;
+            constexpr OpCodeInfo S_HandshakeAccepted = {
+                    0xF0,
+                    "Server sending to client that their handshake was successful.",
+                    "Handshake Accepted",
+                    false,
+                    6};
 
-        // Server rejects handshake.
-        // Payload: [reasonCode:1][reasonLength:1][reason:variable]
-        constexpr uint8_t S_Handshake_Rejected = 0xF1;
+            constexpr OpCodeInfo S_ServerShutdown = {
+                    0xF2,
+                    "Server cleanly disconnects client due to shutdown.",
+                    "Server Shutdown",
+                    true,
+                    2};
 
-        // Client requests graceful disconnect.
-        // Payload: (none)
-        constexpr uint8_t C_Disconnect_Request = 0xFE;
+            // Server rejects handshake.
+            // Payload: [reasonCode:1][reasonLength:1][reason:variable]
+            constexpr uint8_t S_Handshake_Rejected = 0xF1;
 
-        // Server acknowledges disconnect.
-        // Payload: (none)
-        constexpr uint8_t S_Disconnect_Acknowledged = 0xFF;
+            // Server acknowledges disconnect.
+            // Payload: (none)
+            constexpr uint8_t S_Disconnect_Acknowledged = 0xFF;
 
-        // Client ping request.
-        // Payload: [timestamp:4]
-        constexpr uint8_t C_Ping_Request = 0xF6;
+            // Server pong response.
+            // Payload: [timestamp:4]
+            constexpr uint8_t S_Pong_Response = 0xF7;
 
-        // Server pong response.
-        // Payload: [timestamp:4]
-        constexpr uint8_t S_Pong_Response = 0xF7;
+            // Server ping request.
+            // Payload: [timestamp:4]
+            constexpr uint8_t S_Ping_Request = 0xF8;
 
-        // Server ping request.
-        // Payload: [timestamp:4]
-        constexpr uint8_t S_Ping_Request = 0xF8;
+            // Server heartbeat acknowledgment.
+            // Payload: (none)
+            constexpr uint8_t S_Heartbeat_Response = 0xFB;
+        }
 
-        // Client pong response.
-        // Payload: [timestamp:4]
-        constexpr uint8_t C_Pong_Response = 0xF9;
 
-        // Client heartbeat.
-        // Payload: (none)
-        constexpr uint8_t C_Heartbeat_Request = 0xFA;
-
-        // Server heartbeat acknowledgment.
-        // Payload: (none)
-        constexpr uint8_t S_Heartbeat_Response = 0xFB;
     }
+    namespace Client{
+        // ========================================================================
+        // CONNECTION & HANDSHAKE
+        // ========================================================================
+        namespace Connection
+        {
+
+            /// Initial connection handshake from client.\n
+            /// Payload: [version:2][clientMagic:4]
+            constexpr OpCodeInfo C_Handshake_Request = {
+                    0x00,
+                    "Client sending first handshake to server.",
+                    "Client-Server Handshake Request",
+                    true,
+                    7};
+
+            // Client requests graceful disconnect.
+            // Payload: (none)
+            constexpr uint8_t C_Disconnect_Request = 0xFE;
+
+            // Client ping request.
+            // Payload: [timestamp:4]
+            constexpr uint8_t C_Ping_Request = 0xF6;
+
+            // Client pong response.
+            // Payload: [timestamp:4]
+            constexpr uint8_t C_Pong_Response = 0xF9;
+
+            // Client heartbeat.
+            // Payload: (none)
+            constexpr uint8_t C_Heartbeat_Request = 0xFA;
+        }
+    }
+
 
     // ========================================================================
     // CLIENT MOVEMENT & ACTIONS
@@ -553,17 +595,15 @@ namespace Protocol::OpcodeUtil
         switch (opcode)
         {
             // Connection
-            case Opcode::Connection::C_Handshake_Request:       return "Connection::C_Handshake_Request";
-            case Opcode::Connection::S_Handshake_Accepted:      return "Connection::S_Handshake_Accepted";
-            case Opcode::Connection::S_Handshake_Rejected:      return "Connection::S_Handshake_Rejected";
-            case Opcode::Connection::C_Disconnect_Request:      return "Connection::C_Disconnect_Request";
-            case Opcode::Connection::S_Disconnect_Acknowledged: return "Connection::S_Disconnect_Acknowledged";
-            case Opcode::Connection::C_Ping_Request:            return "Connection::C_Ping_Request";
-            case Opcode::Connection::S_Pong_Response:           return "Connection::S_Pong_Response";
-            case Opcode::Connection::S_Ping_Request:            return "Connection::S_Ping_Request";
-            case Opcode::Connection::C_Pong_Response:           return "Connection::C_Pong_Response";
-            case Opcode::Connection::C_Heartbeat_Request:       return "Connection::C_Heartbeat_Request";
-            case Opcode::Connection::S_Heartbeat_Response:      return "Connection::S_Heartbeat_Response";
+            case Opcode::Server::Connection::S_Handshake_Rejected:      return "Connection::S_Handshake_Rejected";
+            case Opcode::Client::Connection::C_Disconnect_Request:      return "Connection::C_Disconnect_Request";
+            case Opcode::Server::Connection::S_Disconnect_Acknowledged: return "Connection::S_Disconnect_Acknowledged";
+            case Opcode::Client::Connection::C_Ping_Request:            return "Connection::C_Ping_Request";
+            case Opcode::Server::Connection::S_Pong_Response:           return "Connection::S_Pong_Response";
+            case Opcode::Server::Connection::S_Ping_Request:            return "Connection::S_Ping_Request";
+            case Opcode::Client::Connection::C_Pong_Response:           return "Connection::C_Pong_Response";
+            case Opcode::Client::Connection::C_Heartbeat_Request:       return "Connection::C_Heartbeat_Request";
+            case Opcode::Server::Connection::S_Heartbeat_Response:      return "Connection::S_Heartbeat_Response";
 
                 // Movement
             case Opcode::Movement::C_Move_Request:              return "Movement::C_Move_Request";
@@ -669,10 +709,10 @@ namespace Protocol::OpcodeUtil
                (opcode >= 0x60 && opcode <= 0x6F) ||
                (opcode >= 0x80 && opcode <= 0x8F) ||
                (opcode >= 0xA0 && opcode <= 0xAF) ||
-               opcode == Opcode::Connection::C_Ping_Request ||
-               opcode == Opcode::Connection::C_Pong_Response ||
-               opcode == Opcode::Connection::C_Heartbeat_Request ||
-               opcode == Opcode::Connection::C_Disconnect_Request ||
+               opcode == Opcode::Client::Connection::C_Ping_Request ||
+               opcode == Opcode::Client::Connection::C_Pong_Response ||
+               opcode == Opcode::Client::Connection::C_Heartbeat_Request ||
+               opcode == Opcode::Client::Connection::C_Disconnect_Request ||
                opcode == Opcode::Debug::C_Request_State;
     }
 

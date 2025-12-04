@@ -1,4 +1,4 @@
-#include "include/server/Player.h"
+#include "Player.h"
 
 Player::Player(uint32_t id, int start_x, int start_y)
         : id_(id), x_(start_x), y_(start_y), facing_(2) {}

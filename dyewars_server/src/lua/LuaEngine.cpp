@@ -1,4 +1,4 @@
-#include "include/lua/LuaEngine.h"
+#include "LuaEngine.h"
 #include <iostream>
 #include <fstream>
 

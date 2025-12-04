@@ -1,6 +1,6 @@
 #pragma once
 #include <cstdint>
-#include "GameMap.h"
+#include "game/GameMap.h"
 
 class Player
 {

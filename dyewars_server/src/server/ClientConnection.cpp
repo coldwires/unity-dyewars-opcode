@@ -1,9 +1,10 @@
-#include "include/server/ClientConnection.h"
-#include "include/server/GameServer.h" // Needed here to call Server methods
-#include "include/server/BandwidthMonitor.h"
-#include "include/server/Packets/OpCodes.h"
+#include "ClientConnection.h"
+#include "GameServer.h" // Needed here to call Server methods
+#include "network/BandwidthMonitor.h"
+#include "network/Packets/OpCodes.h"
 #include <iomanip>
 #include <fstream>
+using namespace Protocol::Opcode;
 
 ClientConnection::ClientConnection(asio::ip::tcp::socket socket,
                                    std::shared_ptr<LuaGameEngine> engine,
@@ -26,6 +27,17 @@ ClientConnection::ClientConnection(asio::ip::tcp::socket socket,
             }
         }
 
+ClientConnection::~ClientConnection(){
+    try {
+        std::error_code ec;
+        handshake_timer_.cancel();
+        if (socket_.is_open()) {
+            socket_.close(ec);
+        }
+    } catch (...) {
+        // Ignore errors during destruction
+    }
+}
 void ClientConnection::Start() {
     std::cout << "IP:" << client_ip_ << " Hostname:" << client_hostname_
     << " connected to the server." << std::endl;
@@ -35,14 +47,8 @@ void ClientConnection::Start() {
 
     //Begin reading
     ReadPacketHeader();
-
-//    std::cout << "Player " << player_->GetID() << " connected!" << std::endl;
-//    SendPlayerID();
-//    SendPosition();
-//    SendAllPlayers();
-//    BroadcastPlayerJoined();
-//    ReadPacketHeader();
 }
+
 // ============================================================================
 // HANDSHAKE LOGIC
 // ============================================================================
@@ -70,38 +76,37 @@ void ClientConnection::OnHandshakeTimeout(const std::error_code& ec) {
 }
 
 void ClientConnection::HandleHandshakePacket(const std::vector<uint8_t>& data) {
-    // Expected format:
-    // Byte 0: Opcode (0x00)
-    // Bytes 1-2: Protocol version (0x00 0x01)
-    // Bytes 3-6: Client magic ("DYEW" = 0x44 0x59 0x45 0x57)
+    /// \note
+    /// Expected format:\n
+    /// Byte 0: Opcode (0x00)\n
+    /// Bytes 1-2: Protocol version (0x00 0x01)\n
+    /// Bytes 3-6: Client magic ("DYEW" = 0x44 0x59 0x45 0x57)\n
+    const auto& op = Protocol::Opcode::Client::Connection::C_Handshake_Request;
 
-    if (data.size() != 7) {
-        FailHandshake("handshake packet size doesn't match");
-        return;
+    if (data.size() != op.payloadSize) {
+        return FailHandshake(std::format("invalid packet size (got {}, expected {})",
+                                         data.size(), op.payloadSize));
     }
 
     size_t offset = 0;
     uint8_t opcode = Protocol::PacketReader::ReadByte(data, offset);
-
-    if (opcode != Protocol::Opcode::Connection::C_Handshake_Request) {
-        FailHandshake("expected handshake opcode 0x00");
-        return;
-    }
-
     uint16_t version = Protocol::PacketReader::ReadShort(data, offset);
-    if (version != Protocol::VERSION) {
-        std::ostringstream oss;
-        oss << "protocol version mismatch (client: 0x" << std::hex << version
-            << ", server: 0x" << Protocol::VERSION << ")";
-        FailHandshake(oss.str());
-        return;
+    uint32_t magic = Protocol::PacketReader::ReadUInt(data, offset);
+
+    if (opcode != op.op) {
+        return FailHandshake(std::format("expected opcode 0x{:02X}, got 0x{:02X}", op.op, opcode));
     }
 
-    uint32_t magic = Protocol::PacketReader::ReadUInt(data, offset);
+    if (version != Protocol::VERSION) {
+        return FailHandshake(std::format("version mismatch (client: 0x{:04X}, server: 0x{:04X})",
+                                         version, Protocol::VERSION));
+    }
+
     if (magic != Protocol::CLIENT_MAGIC) {
         FailHandshake("invalid client identifier");
         return;
     }
+
     // Handshake successful!
     CompleteHandshake();
 }
@@ -295,6 +300,14 @@ void ClientConnection::LogPacketReceived(const std::vector<uint8_t>& payload, ui
     }
 
     std::cout << std::dec << " (" << size << " bytes)" << std::endl;
+}
+
+void ClientConnection::CloseSocket() {
+    std::error_code ec;
+    handshake_timer_.cancel();
+    if (socket_.is_open()) {
+        socket_.close(ec);
+    }
 }
 
 // --- SENDING FUNCTIONS ---

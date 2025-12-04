@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.31)
 project(DyeWarsServer)
 
 set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Find packages
 find_package(asio CONFIG REQUIRED)
@@ -11,23 +12,29 @@ find_package(sol2 CONFIG REQUIRED)
 find_package(lua REQUIRED)
 find_package(SQLite3 REQUIRED)
 
-add_executable(DyeWarsServer src/main.cpp
-        include/database/DatabaseManager.h
-        include/server/Common.h
-        src/server/GameServer.cpp
-        include/server/GameServer.h
-        include/lua/LuaEngine.h
-        src/lua/LuaEngine.cpp
-        src/server/ClientConnection.cpp
-        include/server/ClientConnection.h
-        include/server/GameMap.h
-        src/server/GameMap.cpp
-        include/server/Player.h
-        src/server/Player.cpp
-        include/server/BandwidthMonitor.h
-        include/server/Packets/OpCodes.h
-        include/server/Packets/Protocol.h)
+# Gather sources (exclude build directory)
+file(GLOB_RECURSE SOURCES
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/server/*.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/game/*.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/network/*.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/database/*.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/lua/*.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
+)
 
+file(GLOB_RECURSE HEADERS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/server/*.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/game/*.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/network/*.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/database/*.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/lua/*.h"
+)
+
+add_executable(DyeWarsServer ${SOURCES} ${HEADERS}
+        src/core/Log.h
+        src/network/packets/Sender.h)
 
 # Link libraries
 target_link_libraries(DyeWarsServer PRIVATE
@@ -41,5 +48,6 @@ target_link_libraries(DyeWarsServer PRIVATE
 
 # Include directories - add your source directories
 target_include_directories(DyeWarsServer PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${LUA_INCLUDE_DIR}
 )

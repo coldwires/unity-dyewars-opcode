@@ -1,4 +1,4 @@
-#include "include/server/GameMap.h"
+#include "game/GameMap.h"
 
 GameMap::GameMap(int width, int height) : width_(width), height_(height) {
     // Initialize empty grid
