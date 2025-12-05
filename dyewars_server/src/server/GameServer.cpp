@@ -21,24 +21,24 @@ GameServer::GameServer(asio::io_context& io_context)
                     asio::ip::tcp::endpoint(
                             asio::ip::address::from_string(Protocol::ADDRESS),
                             Protocol::PORT)),
-          lua_engine_(make_shared<LuaGameEngine>())
+          lua_engine_(make_shared<LuaGameEngine>()),
+              world_(10,10)
           {
 
     // TODO Replace this with tilemap
     // Initialize Map 10x10
-    game_map_ = make_unique<GameMap>(10, 10);
+    //game_map_ = make_unique<GameMap>(10, 10);
 
     Log::Info("Server starting on port {}...",Protocol::PORT);
     StartAccept();
-
-    game_loop_thread_ = thread(&GameServer::RunGameLoop, this);
+    game_loop_thread_ = thread(&GameServer::GameLogicThread, this);
 }
 
 GameServer::~GameServer() {
         Shutdown();
 }
 
-void GameServer::RunGameLoop() {
+void GameServer::GameLogicThread() {
     const int TICKS_PER_SECOND = 20;
     const std::chrono::milliseconds TICK_RATE(1000 / TICKS_PER_SECOND); // 50ms
 
@@ -46,7 +46,7 @@ void GameServer::RunGameLoop() {
         auto start_time = std::chrono::steady_clock::now();
 
         // 1. Process Logic
-        ProcessUpdates();
+        ProcessTick();
 
         // Update bandwidth stats every tick, prints every second
         BandwidthMonitor::Instance().Tick();
@@ -73,7 +73,10 @@ void GameServer::Shutdown() {
     std::error_code ec;
     acceptor_.close(ec);
 
+    clients_.CloseAll();
+
     // Close all client sockets first
+    /*
     {
         std::lock_guard<std::mutex> lock(sessions_mutex_);
         for (auto& [id, session] : clients_) {
@@ -81,6 +84,7 @@ void GameServer::Shutdown() {
         }
         clients_.clear();  // Clear while lock is held
     }
+    */
 
     if (game_loop_thread_.joinable()) {
         game_loop_thread_.join();
@@ -88,8 +92,75 @@ void GameServer::Shutdown() {
 
     io_context_.stop();
 }
- 
-void GameServer::ProcessUpdates() {
+
+void GameServer::StartAccept() {
+    acceptor_.async_accept([this](
+        std::error_code ec,
+        asio::ip::tcp::socket socket) {
+        if (!ec && server_running_) {
+
+            // If we fail getting ip, close socket and listen for next connection
+            std::string ip;
+            try {
+                ip = socket.remote_endpoint().address().to_string();
+            }
+            catch (...) {
+                socket.close();
+                if (server_running_) StartAccept();
+                return;
+            }
+            Log::Info("IP: {} trying to connect.", ip);
+
+            if (limiter_.IsBanned(ip)) {
+                Log::Trace("Rejected banned IP: {}", ip);
+                socket.close();
+            }
+            else if (!limiter_.CheckRateLimit(ip)) {
+                Log::Trace("Rate limited IP: {}", ip);
+                socket.close();
+            }
+            else if (!limiter_.CanConnect(ip)) {
+                Log::Trace("Connection limit reached for IP: {}", ip);
+                socket.close();
+            }
+            else {
+                limiter_.AddConnection(ip);
+
+
+                uint64_t client_id = next_client_id_++;
+
+                // Create the session. Note: the session is NOT in the sessions_ map yet.
+                // It will register itself after a successful handshake.
+                auto client = std::make_shared<ClientConnection>(
+                    std::move(socket),
+                    lua_engine_,
+                    this,
+                    client_id);
+
+                // Start the session's async read chain and handshake timer.
+                // The session keeps itself alive via shared_from_this() in its async callbacks.
+                // If the handshake fails or times out, the session will clean itself up.
+                client->Start();
+            }
+        }
+        else if (server_running_) {
+            // Only log if it's not a shutdown
+            Log::Error("Accept failed: {}", ec.message());
+        }
+        // Only restart if still running
+        if (server_running_) {
+            StartAccept();
+        }
+        });
+}
+
+void GameServer::ProcessTick() {
+    auto dirty_players = players_.GetDirtyPlayers();
+    if (dirty_players.empty()) return;
+
+    // Broadcast updates
+    // TODO: Implement view-based broadcasting
+
     vector<PlayerData> moving_players;
     vector<shared_ptr<ClientConnection>> all_receivers;
 
@@ -158,21 +229,10 @@ void GameServer::ProcessUpdates() {
     }
 }
 
-void GameServer::BroadcastToOthers(
-        uint32_t exclude_id,
-        const std::function<void(shared_ptr<ClientConnection>)> &action) {
 
-    lock_guard<mutex> lock(sessions_mutex_);
-    for (const auto& [id, conn]: clients_) {
-        if (id != exclude_id)
-            action(conn);
-    }
-}
 
-void GameServer::BroadcastToAll(std::function<void(shared_ptr<ClientConnection>)> action) {
-    lock_guard<mutex> lock(sessions_mutex_);
-    for (const auto& pair : clients_) action(pair.second);
-}
+
+/*
 
 std::vector<PlayerData> GameServer::GetAllPlayers() {
     std::lock_guard<std::mutex> lock(sessions_mutex_);
@@ -206,46 +266,10 @@ uint32_t GameServer::GenerateUniquePlayerID(){
     //throw std::runtime_error("Failed to generate unique player ID");
 }
 
-void GameServer::StartAccept() {
-    acceptor_.async_accept([this](std::error_code ec, asio::ip::tcp::socket socket) {
-        if (!ec) {
-            // Attempt to generate a unique player ID
-            // This could fail if we somehow have billions of players (impossible)
-            // or if the RNG is broken. Either way, we handle it gracefully.
-            uint32_t id = GenerateUniquePlayerID();
-            if(id == 0)
-            {
-                Log::Error("Failed to generate player ID: {}\nRejecting connection from {}",
-                           id,
-                           socket.remote_endpoint().address().to_string());
-                socket.close();
-            } else {
-                // Create the session. Note: the session is NOT in the sessions_ map yet.
-                // It will register itself after a successful handshake.
-                auto session = std::make_shared<ClientConnection>(
-                        std::move(socket),
-                        lua_engine_,
-                        this,
-                        id);
-
-                // Start the session's async read chain and handshake timer.
-                // The session keeps itself alive via shared_from_this() in its async callbacks.
-                // If the handshake fails or times out, the session will clean itself up.
-                session->Start();
-            }
-        } else if (server_running_) {
-            // Only log if it's not a shutdown
-                Log::Error("Accept failed: {}", ec.message());
-            }
-        // Only restart if still running
-        if (server_running_) {
-            StartAccept();
-        }
-    });
-}
-
 void GameServer::RegisterSession(std::shared_ptr<ClientConnection> session) {
     std::lock_guard<std::mutex> lock(sessions_mutex_);
     clients_[session->GetPlayerID()] = session;
     std::cout << "Player " << session->GetPlayerID() << " registered (handshake complete)" << std::endl;
 }
+
+*/

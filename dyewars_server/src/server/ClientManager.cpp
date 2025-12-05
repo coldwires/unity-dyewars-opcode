@@ -10,18 +10,15 @@ void ClientManager::AddClient(const std::shared_ptr<ClientConnection> &client) {
 	}
 }
 
-uint32_t ClientManager::GenerateUniquePlayerID()
-{
+void ClientManager::RemoveClient(uint32_t client_id) {
 	std::lock_guard<std::mutex> lock(mutex_);
-	for (int attempts = 0; attempts < 150; attempts++)
-	{
-		uint32_t id = id_dist_(rng_);
-		if (!clients_.contains(id)) {
-			return id;
-		}
-	}
-	Log::Error("Failed to generate unique ID");
-	return 0;
+	clients_.erase(client_id);
+}
+
+std::shared_ptr<ClientConnection> ClientManager::GetClientCopy(uint32_t client_id) {
+	std::lock_guard<std::mutex> lock(mutex_);
+	auto it = clients_.find(client_id);
+	return it != clients_.end() ? it->second : nullptr;
 }
 
 void ClientManager::BroadcastToOthers(
@@ -61,3 +58,19 @@ void ClientManager::BroadcastToAll(
 	for(const auto &conn : clients)
 		action(conn);
 }
+
+size_t ClientManager::Count()
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	return clients_.size();
+}
+
+/// <summary>
+/// Closes all client connections
+/// </summary>
+void ClientManager::CloseAll() {
+	std::lock_guard<std::mutex> lock(mutex_);
+	for (auto& [id, conn] : clients_)
+		conn->Disconnect("Mass D/C From ClientManager");
+}
+

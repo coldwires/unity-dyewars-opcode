@@ -4,24 +4,24 @@
 #include "network/Packets/OpCodes.h"
 #include <iomanip>
 #include <fstream>
+#include <core/Log.h>
 using namespace Protocol::Opcode;
 
 ClientConnection::ClientConnection(asio::ip::tcp::socket socket,
                                    std::shared_ptr<LuaGameEngine> engine,
                                    GameServer* server,
-                                   uint32_t player_id)
+                                   uint64_t client_id)
         : socket_(std::move(socket)),
         lua_engine_(engine),
         server_(server),
-        player_id_(player_id),
+        client_id_(client_id),
         handshake_timer_(socket_.get_executor())
         {
             try{
-                auto endpoint = socket_.remote_endpoint();
-                client_ip_ = endpoint.address().to_string();
+                client_ip_ = socket.remote_endpoint().address().to_string();
                 //DNS lookup is slow, move to worker thread
                 client_hostname_ = client_ip_;
-            } catch (const std::exception& e) {
+            } catch (...) {
                 client_ip_ = "unknown";
                 client_hostname_ = "unknown";
             }
@@ -29,24 +29,79 @@ ClientConnection::ClientConnection(asio::ip::tcp::socket socket,
 
 ClientConnection::~ClientConnection(){
     try {
-        std::error_code ec;
-        handshake_timer_.cancel();
-        if (socket_.is_open()) {
-            socket_.close(ec);
-        }
+        Disconnect("");
     } catch (...) {
         // Ignore errors during destruction
     }
 }
 void ClientConnection::Start() {
-    std::cout << "IP:" << client_ip_ << " Hostname:" << client_hostname_
-    << " connected to the server." << std::endl;
+    Log::Info("IP: {} Hostname: {} starting client connection.",client_ip_, client_hostname_);
 
     //5 seconds to respond
     StartHandshakeTimeout();
 
     //Begin reading
     ReadPacketHeader();
+}
+
+void ClientConnection::Disconnect(const std::string& reason) {
+    if (auto player = player_.lock())
+    {
+        server_->Players().RemovePlayer();
+    }
+
+    server_->Limiter().RemoveConnection(client_ip_);
+    CloseSocket();
+}
+
+void ClientConnection::CloseSocket() {
+    std::error_code ec;
+    handshake_timer_.cancel();
+    if (socket_.is_open()) {
+        socket_.close(ec);
+    }
+}
+
+bool ClientConnection::HasPlayer() const {
+    return !player_.expired();
+}
+
+std::shared_ptr<Player> ClientConnection::GetPlayer() const {
+    return player_.lock();
+}
+
+void ClientConnection::SetPlayer(std::weak_ptr<Player> player) {
+    player_ = player;
+}
+
+void ClientConnection::ClearPlayer() {
+    player_.reset();
+}
+
+// =====================
+// PACKETS
+// =====================
+
+void ClientConnection::SendPacket(const Protocol::Packet& pkt) {
+    auto self(shared_from_this());
+    auto data = std::make_shared<std::vector<uint8_t>>(pkt.ToBytes());
+
+    // Track bandwidth
+    BandwidthMonitor::Instance().RecordOutgoing(data->size());
+
+    asio::async_write(socket_, asio::buffer(*data),
+        [this, self, data](std::error_code ec, std::size_t) {});
+}
+
+void ClientConnection::RawSend(std::shared_ptr<std::vector<uint8_t>> data) {
+    // Track bandwidth
+    BandwidthMonitor::Instance().RecordOutgoing(data->size());
+
+    auto self(shared_from_this());
+    asio::async_write(socket_, asio::buffer(*data),
+        [this, self, data](std::error_code ec, std::size_t) {
+            // Error handling
+        });
 }
 
 // ============================================================================
@@ -129,19 +184,11 @@ void ClientConnection::CompleteHandshake() {
 }
 
 void ClientConnection::FailHandshake(const std::string& reason) {
-    std::cout << "IP:" << client_ip_ << " Hostname:" << client_hostname_
-              << " " << reason << ". Adding to log." << std::endl;
-
+    Log::Warn("IP: {} Hostname: {} handshake failed {}.", client_ip_, client_hostname_, reason);
+    server_->Limiter().RecordFailure(client_ip_);
     LogFailedConnection(reason);
-
-    // Close the socket
-    std::error_code ec;
-    socket_.close(ec);
-}
-void ClientConnection::Disconnect(const std::string& reason){
-    handshake_timer_.cancel();  // Cancel any pending timeout
-    std::error_code ec;
-    socket_.close(ec);
+    CloseSocket();
+    
 }
 
 void ClientConnection::LogFailedConnection(const std::string& reason) {
@@ -302,26 +349,11 @@ void ClientConnection::LogPacketReceived(const std::vector<uint8_t>& payload, ui
     std::cout << std::dec << " (" << size << " bytes)" << std::endl;
 }
 
-void ClientConnection::CloseSocket() {
-    std::error_code ec;
-    handshake_timer_.cancel();
-    if (socket_.is_open()) {
-        socket_.close(ec);
-    }
-}
+
 
 // --- SENDING FUNCTIONS ---
+/*
 
-void ClientConnection::SendPacket(const Protocol::Packet& pkt) {
-    auto self(shared_from_this());
-    auto data = std::make_shared<std::vector<uint8_t>>(pkt.ToBytes());
-
-    // Track bandwidth
-    BandwidthMonitor::Instance().RecordOutgoing(data->size());
-
-    asio::async_write(socket_, asio::buffer(*data),
-                      [this, self, data](std::error_code ec, std::size_t) {});
-}
 
 void ClientConnection::SendPlayerID() {
     Protocol::Packet pkt;
@@ -384,24 +416,14 @@ void ClientConnection::SendAllPlayers() {
 void ClientConnection::BroadcastPlayerJoined() {
     server_->BroadcastToOthers(player_->GetID(), [this](auto s){ s->SendPlayerUpdate(player_->GetID(), player_->GetX(), player_->GetY(), player_->GetFacing()); });
 }
-/*
+
 void GameSession::BroadcastPlayerMoved() {
     server_->BroadcastToOthers(player_id_, [this](auto s){ s->SendPlayerUpdate(player_id_, player_x_, player_y_); });
-}*/
+}
 
 void ClientConnection::BroadcastPlayerLeft() {
     uint32_t my_id = player_->GetID();
     server_->RemoveSession(my_id);  // Remove first
     server_->BroadcastToAll([my_id](auto s){ s->SendPlayerLeft(my_id); });  // Then broadcast
 }
-
-void ClientConnection::RawSend(std::shared_ptr<std::vector<uint8_t>> data) {
-    // Track bandwidth
-    BandwidthMonitor::Instance().RecordOutgoing(data->size());
-
-    auto self(shared_from_this());
-    asio::async_write(socket_, asio::buffer(*data),
-                      [this, self, data](std::error_code ec, std::size_t) {
-                          // Error handling
-                      });
-}
+*/

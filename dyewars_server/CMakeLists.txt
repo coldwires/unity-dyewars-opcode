@@ -34,7 +34,7 @@ file(GLOB_RECURSE HEADERS
 
 add_executable(DyeWarsServer ${SOURCES} ${HEADERS}
         src/core/Log.h
-        src/network/packets/Sender.h "src/server/ClientManager.h" "src/server/ClientManager.cpp")
+        src/network/packets/Sender.h "src/server/ClientManager.h" "src/server/ClientManager.cpp" "src/network/ConnectionLimiter.h" "src/network/ConnectionLimiter.cpp")
 
 # Link libraries
 target_link_libraries(DyeWarsServer PRIVATE

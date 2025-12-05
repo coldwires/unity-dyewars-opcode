@@ -1,11 +1,8 @@
 #pragma once
-#include <map>
-#include <mutex>
 #include <memory>
-#include <vector>
-#include <random>
+#include <unordered_map>
+#include <mutex>
 #include <functional>
-#include "core/Common.h"
 
 class ClientConnection;
 
@@ -15,7 +12,7 @@ public:
 	/// <summary>
 	/// adds client to client list
 	/// </summary>
-	void AddClient(std::shared_ptr<ClientConnection> client);
+	void AddClient(const std::shared_ptr<ClientConnection> &client);
 	
 	/// <summary>
 	/// Removes client
@@ -30,9 +27,6 @@ public:
 	std::shared_ptr<ClientConnection> GetClientCopy(uint32_t client_id);
 	ClientConnection* GetClientPtr(uint32_t id);
 
-	// TODO Move to player registry
-	uint32_t GenerateUniquePlayerID();
-
 	void BroadcastToOthers(uint32_t exclude_id, const std::function<void(const std::shared_ptr<ClientConnection>&)>& action);
 	void BroadcastToAll(const std::function<void(const std::shared_ptr<ClientConnection>&)> &action);
 
@@ -43,7 +37,5 @@ private:
 	std::map<uint32_t, std::shared_ptr<ClientConnection>> clients_;
 	std::mutex mutex_;
 
-	//TODO Move to player registry
-	std::mt19937 rng_{ std::random_device{}() };
-	std::uniform_int_distribution<uint32_t> id_dist_{ 1, 0xFFFFFFFF };
+	
 };
