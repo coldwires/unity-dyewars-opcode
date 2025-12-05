@@ -43,6 +43,8 @@ public:
 
 
 private:
+    uint32_t client_id_;
+    std::shared_ptr<Player> player_;
     // Handshake methods
     void StartHandshakeTimeout();
     void OnHandshakeTimeout(const std::error_code& ec);

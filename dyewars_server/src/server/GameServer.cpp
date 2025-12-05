@@ -76,10 +76,10 @@ void GameServer::Shutdown() {
     // Close all client sockets first
     {
         std::lock_guard<std::mutex> lock(sessions_mutex_);
-        for (auto& [id, session] : sessions_) {
+        for (auto& [id, session] : clients_) {
             session->CloseSocket();
         }
-        sessions_.clear();  // Clear while lock is held
+        clients_.clear();  // Clear while lock is held
     }
 
     if (game_loop_thread_.joinable()) {
@@ -96,7 +96,7 @@ void GameServer::ProcessUpdates() {
     // Lock logic just long enough to grab data
     {
        lock_guard<mutex> lock(sessions_mutex_);
-        for (auto& pair : sessions_) {
+        for (auto& pair : clients_) {
             auto session = pair.second;
             all_receivers.push_back(session); // Everyone receives updates
 
@@ -163,7 +163,7 @@ void GameServer::BroadcastToOthers(
         const std::function<void(shared_ptr<ClientConnection>)> &action) {
 
     lock_guard<mutex> lock(sessions_mutex_);
-    for (const auto& [id, conn]: sessions_) {
+    for (const auto& [id, conn]: clients_) {
         if (id != exclude_id)
             action(conn);
     }
@@ -171,19 +171,19 @@ void GameServer::BroadcastToOthers(
 
 void GameServer::BroadcastToAll(std::function<void(shared_ptr<ClientConnection>)> action) {
     lock_guard<mutex> lock(sessions_mutex_);
-    for (const auto& pair : sessions_) action(pair.second);
+    for (const auto& pair : clients_) action(pair.second);
 }
 
 std::vector<PlayerData> GameServer::GetAllPlayers() {
     std::lock_guard<std::mutex> lock(sessions_mutex_);
     std::vector<PlayerData> players;
-    for (auto& pair : sessions_) players.push_back(pair.second->GetPlayerData());
+    for (auto& pair : clients_) players.push_back(pair.second->GetPlayerData());
     return players;
 }
 
 void GameServer::RemoveSession(uint32_t player_id) {
     std::lock_guard<std::mutex> lock(sessions_mutex_);
-    sessions_.erase(player_id);
+    clients_.erase(player_id);
 }
 
 uint32_t GameServer::GenerateUniquePlayerID(){
@@ -195,7 +195,7 @@ uint32_t GameServer::GenerateUniquePlayerID(){
 
     do{
         id = id_dist_(rng_);
-        if(!sessions_.contains(id))
+        if(!clients_.contains(id))
             return id;
         attempts++;
     } while (attempts < max_attempts);
@@ -246,6 +246,6 @@ void GameServer::StartAccept() {
 
 void GameServer::RegisterSession(std::shared_ptr<ClientConnection> session) {
     std::lock_guard<std::mutex> lock(sessions_mutex_);
-    sessions_[session->GetPlayerID()] = session;
+    clients_[session->GetPlayerID()] = session;
     std::cout << "Player " << session->GetPlayerID() << " registered (handshake complete)" << std::endl;
 }

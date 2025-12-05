@@ -18,16 +18,18 @@ public:
     ~GameServer();//Destructor
     void Shutdown();
 
+    ClientManager& Clients() { return clientManager_;}
+
+    // TODO Move all this:
     void ReloadScripts() { lua_engine_->ReloadScripts(); }
 
     //Registers client connection as a real client
     void RegisterSession(std::shared_ptr<ClientConnection> session);
     void RemoveSession(uint32_t player_id);
-    void BroadcastToAll(std::function<void(std::shared_ptr<ClientConnection>)> action);
-    void BroadcastToOthers(uint32_t exclude_id, const std::function<void(std::shared_ptr<ClientConnection>)> &action);
+
     std::vector<PlayerData> GetAllPlayers();
     // Getter so Sessions can see the map
-    const GameMap& GetMap() const { return *game_map_; }
+    const GameMap &GetMap() const { return *game_map_; }
 
 
 
@@ -35,7 +37,8 @@ private:
     void StartAccept();
     void RunGameLoop();
     void ProcessUpdates();
-    uint32_t GenerateUniquePlayerID();
+
+    ClientManager clientManager_;
 
     // References
     asio::io_context& io_context_;
@@ -46,7 +49,7 @@ private:
     std::atomic<bool> shutdown_requested_{false};
 
     // Sessions
-    std::map<uint32_t, std::shared_ptr<ClientConnection>> sessions_;
+    std::map<uint32_t, std::shared_ptr<ClientConnection>> clients_;
     std::mutex sessions_mutex_;
 
     // Threads

@@ -29,3 +29,4 @@ bool Player::AttemptMove(uint8_t direction, const GameMap& map) {
 
     return false; // Hit a wall
 }
+
