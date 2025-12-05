@@ -1,10 +1,12 @@
 #pragma once
-#include <cstdint>
+class PlayerRegistry;
+class TileMap;
+class ClientManager;
 
-// --- PLAYER DATA ---
-struct PlayerData {
-    uint32_t player_id;
-    int x;
-    int y;
-    uint8_t facing; //0=up, 1=right, 2=down, 3=left
+// Everything handlers might need
+struct GameContext {
+    PlayerRegistry& players;
+    TileMap& map;
+    ClientManager& clients;
+    // Add more as needed: CombatSystem&, LuaEngine&, etc.
 };

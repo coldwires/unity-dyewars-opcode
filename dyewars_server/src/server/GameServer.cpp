@@ -1,19 +1,13 @@
+/// =======================================
+/// DyeWarsServer
+/// Created by Anonymous on Dec 05, 2025
+/// =======================================
 #include "GameServer.h"
-#include <iostream>
+#include "ClientConnection.h"
 #include "network/BandwidthMonitor.h"
+#include "lua/LuaEngine.h"
+#include "network/packets/outgoing/PacketSender.h"
 #include "core/Log.h"
-#include "network/packets/Sender.h"
-
-using std::vector;
-using std::make_shared;
-using std::make_unique;
-using std::cout;
-using std::endl;
-using std::thread;
-using std::lock_guard;
-using std::mutex;
-using std::shared_ptr;
-
 
 GameServer::GameServer(asio::io_context& io_context)
         : io_context_(io_context),
@@ -21,46 +15,16 @@ GameServer::GameServer(asio::io_context& io_context)
                     asio::ip::tcp::endpoint(
                             asio::ip::address::from_string(Protocol::ADDRESS),
                             Protocol::PORT)),
-          lua_engine_(make_shared<LuaGameEngine>()),
-              world_(10,10)
-          {
+          lua_engine_(std::make_shared<LuaGameEngine>()),
+              world_(10,10) {
 
-    // TODO Replace this with tilemap
-    // Initialize Map 10x10
-    //game_map_ = make_unique<GameMap>(10, 10);
-
-    Log::Info("Server starting on port {}...",Protocol::PORT);
+    Log::Info("Server starting on port {}...", Protocol::PORT);
     StartAccept();
-    game_loop_thread_ = thread(&GameServer::GameLogicThread, this);
+    game_loop_thread_ = std::thread(&GameServer::GameLogicThread, this);
 }
 
 GameServer::~GameServer() {
         Shutdown();
-}
-
-void GameServer::GameLogicThread() {
-    const int TICKS_PER_SECOND = 20;
-    const std::chrono::milliseconds TICK_RATE(1000 / TICKS_PER_SECOND); // 50ms
-
-    while (server_running_) {
-        auto start_time = std::chrono::steady_clock::now();
-
-        // 1. Process Logic
-        ProcessTick();
-
-        // Update bandwidth stats every tick, prints every second
-        BandwidthMonitor::Instance().Tick();
-
-
-        // 2. Sleep until next tick
-        auto end_time = std::chrono::steady_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-
-        if (duration < TICK_RATE) {
-            std::this_thread::sleep_for(TICK_RATE - duration);
-        }
-    }
-    Log::Info("Game Loop Ended.");
 }
 
 void GameServer::Shutdown() {
@@ -73,32 +37,30 @@ void GameServer::Shutdown() {
     std::error_code ec;
     acceptor_.close(ec);
 
+    // Close all client connections
     clients_.CloseAll();
 
-    // Close all client sockets first
-    /*
-    {
-        std::lock_guard<std::mutex> lock(sessions_mutex_);
-        for (auto& [id, session] : clients_) {
-            session->CloseSocket();
-        }
-        clients_.clear();  // Clear while lock is held
-    }
-    */
-
+    // Wait for game loop to finish
     if (game_loop_thread_.joinable()) {
         game_loop_thread_.join();
     }
 
     io_context_.stop();
+
+    Log::Info("Server shutdown complete");
+}
+
+void GameServer::ReloadScripts() {
+    if (lua_engine_) {
+        lua_engine_->ReloadScripts();
+    }
 }
 
 void GameServer::StartAccept() {
     acceptor_.async_accept([this](
-        std::error_code ec,
-        asio::ip::tcp::socket socket) {
+            std::error_code ec,
+            asio::ip::tcp::socket socket) {
         if (!ec && server_running_) {
-
             // If we fail getting ip, close socket and listen for next connection
             std::string ip;
             try {
@@ -126,16 +88,12 @@ void GameServer::StartAccept() {
             else {
                 limiter_.AddConnection(ip);
 
-
                 uint64_t client_id = next_client_id_++;
 
-                // Create the session. Note: the session is NOT in the sessions_ map yet.
-                // It will register itself after a successful handshake.
                 auto client = std::make_shared<ClientConnection>(
-                    std::move(socket),
-                    lua_engine_,
-                    this,
-                    client_id);
+                        std::move(socket),
+                        this,
+                        client_id);
 
                 // Start the session's async read chain and handshake timer.
                 // The session keeps itself alive via shared_from_this() in its async callbacks.
@@ -143,7 +101,7 @@ void GameServer::StartAccept() {
                 client->Start();
             }
         }
-        else if (server_running_) {
+        else if ( ec && server_running_) {
             // Only log if it's not a shutdown
             Log::Error("Accept failed: {}", ec.message());
         }
@@ -151,59 +109,77 @@ void GameServer::StartAccept() {
         if (server_running_) {
             StartAccept();
         }
-        });
+    });
 }
 
-void GameServer::ProcessTick() {
-    // Process all queued commands
-    auto moved_players = players_.ProcessCommands(world_.GetMap());
+void GameServer::GameLogicThread() {
+    const int TICKS_PER_SECOND = 20;
+    const std::chrono::milliseconds TICK_RATE(1000 / TICKS_PER_SECOND); // 50ms
 
-    // Broadcast updates
-    for (const auto& player : moved_players) {
-        uint32_t player_id = player->GetID();
-        int16_t x = player->GetX();
-        int16_t y = player->GetY();
-        uint8_t facing = player->GetFacing();
+    Log::Info("Game loop started ({} ticks/sec)", TICKS_PER_SECOND);
 
-        clients_.BroadcastToAll([=](const auto& conn) {
-            Packets::Send::PlayerUpdate(conn, player_id, x, y, facing);
-        });
-    }
+    while (server_running_) {
+        auto start_time = std::chrono::steady_clock::now();
 
-    auto dirty_players = players_.GetDirtyPlayers();
-    if (dirty_players.empty()) return;
+        // 1. Process Logic
+        ProcessTick();
+        BandwidthMonitor::Instance().Tick();
 
-    // Broadcast updates
-    // TODO: Implement view-based broadcasting
-
-    vector<PlayerData> moving_players;
-    vector<shared_ptr<ClientConnection>> all_receivers;
-
-    // Lock logic just long enough to grab data
-    {
-       lock_guard<mutex> lock(sessions_mutex_);
-        for (auto& pair : clients_) {
-            auto session = pair.second;
-            all_receivers.push_back(session); // Everyone receives updates
-
-            if (session->IsDirty()) {
-                moving_players.push_back(session->GetPlayerData());
-                session->SetDirty(false); // Reset flag
-            }
+        // 2. Sleep until next tick
+        //auto end_time = std::chrono::steady_clock::now();
+        //auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        auto elapsed = std::chrono::steady_clock::now() - start_time;
+        if (elapsed < TICK_RATE) {
+            std::this_thread::sleep_for(TICK_RATE - elapsed);
         }
     }
+    Log::Info("Game Loop Ended.");
+}
 
-    if (moving_players.empty()) return;
+// TODO Overhaul
+void GameServer::ProcessTick() {
+    // Process all queued commands from network thread
+    auto updated_players = players_.ProcessCommands(world_.GetMap(), clients_);
+    if(updated_players.empty()) return;
 
     ///
     /// Authorize Movement
     ///
 
+    // TODO: Implement view-based broadcasting
+    // Broadcast updates to all clients
+    for (const auto& player : updated_players) {
+        uint64_t player_id = player->GetID();
+        int16_t x = player->GetX();
+        int16_t y = player->GetY();
+        uint8_t facing = player->GetFacing();
 
-    // Now call Lua OUTSIDE the lock
-    for (const auto& data : moving_players) {
-        lua_engine_->OnPlayerMoved(data.player_id, data.x, data.y, data.facing);
+        /* I want to send a batch update here similar to the commented out code below
+         * thing is, anything about the player could of changed. do I send one large batch or
+         * movement batch
+         * status batch
+         * appearance batch
+         *
+         * and how would I know what batch to send? switch player->is_movement_dirty?
+         *
+        clients_.BroadcastToAll([=](const auto& conn) {
+            Packets::Send::PlayerUpdate(conn, player_id, x, y, facing);
+        });*/
     }
+
+    // Call Lua hooks
+    if (lua_engine_) {
+        for (const auto& player : updated_players) {
+            lua_engine_->OnPlayerMoved(
+                    player->GetID(),
+                    player->GetX(),
+                    player->GetY(),
+                    player->GetFacing());
+        }
+    }
+
+
+    /* Packet Batch Example:
 
     // TODO: this takes every moving players data, builds one packet, and sends it to every connected player
     // Extremely unnecessary, just a good example of packet coalescing.
@@ -242,49 +218,40 @@ void GameServer::ProcessTick() {
         // is actually good for sync correction (anti-cheat).
         session->RawSend(encoded_bytes);
     }
+     */
 }
 
+void GameServer::OnClientLogin(std::shared_ptr<ClientConnection> client) {
+    // Register with client manager
+    clients_.AddClient(client);
 
+    // Create player in registry
+    auto player = players_.CreatePlayer(client->GetClientID());
 
+    Log::Info("Client {} logged in as player {}", client->GetClientID(), player->GetID());
 
-/*
+    // Send welcome packet to this client
+    Packets::PacketSender::Welcome(client,player);
 
-std::vector<PlayerData> GameServer::GetAllPlayers() {
-    std::lock_guard<std::mutex> lock(sessions_mutex_);
-    std::vector<PlayerData> players;
-    for (auto& pair : clients_) players.push_back(pair.second->GetPlayerData());
-    return players;
+    // Send existing players to this client
+    auto all_players = players_.GetAllPlayers();
+    for (const auto &other: all_players) {
+        if (other->GetID() == player->GetID()) continue;
+
+        Packets::PacketSender::PlayerJoined(client,
+                                            other->GetID(),
+                                            other->GetX(),
+                                            other->GetY(),
+                                            other->GetFacing());
+    }
+    // Broadcast this player joined to everyone else
+    clients_.BroadcastToOthers(
+            client->GetClientID(),
+           [&](const std::shared_ptr<ClientConnection> &conn) {
+               Packets::PacketSender::PlayerJoined(conn,
+               player->GetID(),
+               player->GetX(),
+               player->GetY(),
+               player->GetFacing());
+               });
 }
-
-void GameServer::RemoveSession(uint32_t player_id) {
-    std::lock_guard<std::mutex> lock(sessions_mutex_);
-    clients_.erase(player_id);
-}
-
-uint32_t GameServer::GenerateUniquePlayerID(){
-    std::lock_guard<std::mutex> lock(sessions_mutex_);
-
-    uint32_t id;
-    int attempts = 0;
-    const int max_attempts = 150;   //Safety Limit
-
-    do{
-        id = id_dist_(rng_);
-        if(!clients_.contains(id))
-            return id;
-        attempts++;
-    } while (attempts < max_attempts);
-
-    // Fallback: this should basically never happen with 4 billion possible IDs
-    // and only ~250 players, but safety first
-    return 0;
-    //throw std::runtime_error("Failed to generate unique player ID");
-}
-
-void GameServer::RegisterSession(std::shared_ptr<ClientConnection> session) {
-    std::lock_guard<std::mutex> lock(sessions_mutex_);
-    clients_[session->GetPlayerID()] = session;
-    std::cout << "Player " << session->GetPlayerID() << " registered (handshake complete)" << std::endl;
-}
-
-*/

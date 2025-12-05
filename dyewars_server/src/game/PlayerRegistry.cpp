@@ -3,14 +3,19 @@
 /// =======================================
 //
 #include "PlayerRegistry.h"
+#include "core/Common.h"
 #include "core/Log.h"
-//using namespace std;
+#include <mutex>
+#include <cassert>
+using namespace std;
 
 shared_ptr<Player> PlayerRegistry::CreatePlayer(uint64_t client_id) {
     uint64_t player_id = GenerateUniqueID();
     assert(player_id != 0 && "PlayerRegistry CreatePlayer failed playerid");
 
     auto player = make_shared<Player>(player_id, 0, 0);
+    player->SetClientID(client_id);
+
     {
         lock_guard<mutex> lock(mutex_);
         players_[player_id] = player;
@@ -22,7 +27,7 @@ shared_ptr<Player> PlayerRegistry::CreatePlayer(uint64_t client_id) {
 
 void PlayerRegistry::RemovePlayer(uint64_t player_id) {
 
-    {
+    {// Find and remove client mapping
         lock_guard<mutex> lock(mutex_);
         for (auto it = client_to_player_.begin(); it != client_to_player_.end(); it++)
         {
@@ -36,9 +41,22 @@ void PlayerRegistry::RemovePlayer(uint64_t player_id) {
     players_.erase(player_id);
     Log::Info("Player {} removed", player_id);
 }
-//using Action = std::variant<>;
 
-void PlayerRegistry::QueueAction(Action action, uint64_t client_id)
+void PlayerRegistry::RemoveByClientID(uint64_t client_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    auto it = client_to_player_.find(client_id);
+    if (it != client_to_player_.end()) {
+        uint32_t player_id = it->second;
+        players_.erase(player_id);
+        client_to_player_.erase(it);
+        Log::Info("Player {} removed (by client {})", player_id, client_id);
+    }
+}
+
+
+
+void PlayerRegistry::QueueAction(const Actions::Action &action, uint64_t client_id)
 {
     lock_guard<mutex> lock(mutex_);
     auto it = client_to_player_.find(client_id);
@@ -46,35 +64,52 @@ void PlayerRegistry::QueueAction(Action action, uint64_t client_id)
     action_queue_.push(action);
 }
 
-std::vector<std::shared_ptr<Player>> PlayerRegistry::ProcessCommands(TileMap &map) {
-    std::vector<std::shared_ptr<Player>> moved_players;
+// TODO returns dirty players, but its calculated here. should calculate in subsystems
+std::vector<std::shared_ptr<Player>> PlayerRegistry::ProcessCommands(
+        TileMap &map,
+        ClientManager &clients) {
 
-    std::queue<MoveCommand> commands;
+    std::vector<std::shared_ptr<Player>> updated_players;
+    // Grab all queued actions
+    // Lock mutex, steal all queued actions, unlock immediately.
+    // Now we own actions locally, network thread can keep adding to action_queue_.
+    std::queue<Actions::Action> actions;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        std::swap(commands, move_queue_);  // Grab all commands, release lock
+        //puts action queue into actions, and null into action que (swap)
+        //no allocation. just pointer swap
+        std::swap(actions, action_queue_);  // Grab all commands, release lock
     }
 
-    while (!commands.empty()) {
-        auto cmd = commands.front();
-        commands.pop();
+    GameContext ctx{*this, map, clients};
 
-        auto player = GetByID(cmd.player_id);
-        if (!player) continue;
+    while (!actions.empty()) {
+        //Loop through each action, get reference to front.
+        //returns ref to first element in queue without removing it
+        auto &action = actions.front();
 
-        if (cmd.direction == cmd.facing && cmd.direction == player->GetFacing()) {
-            if (player->AttemptMove(cmd.direction, map)) {
-                player->SetDirty(true);
-                moved_players.push_back(player);
-            }
-        } else {
-            player->SetFacing(cmd.direction);
-            player->SetDirty(true);
-            moved_players.push_back(player);
+        auto result = std::visit([&](auto &&cmd) {
+            return cmd.Execute(ctx);
+        }, action);
+
+        if(result)
+        {
+            updated_players.push_back(result);
         }
+
+        // Remove processed action from queue.
+        actions.pop();
     }
 
-    return moved_players;
+    // Return all players that need broadcast.
+    return updated_players;
+}
+
+// TODO check
+uint64_t PlayerRegistry::GetPlayerIDForClient(uint64_t client_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = client_to_player_.find(client_id);
+    return it != client_to_player_.end() ? it->second : 0;
 }
 
 std::shared_ptr<Player> PlayerRegistry::GetByID(uint64_t player_id) {
@@ -118,35 +153,13 @@ size_t PlayerRegistry::Count() {
     return players_.size();
 }
 
-uint32_t PlayerRegistry::GenerateUniqueID() {
+uint64_t PlayerRegistry::GenerateUniqueID() {
     int attempts = 0;
     while (attempts < 100) {
-        uint32_t id = id_dist_(rng_);
+        uint64_t id = id_dist_(rng_);
         if (!players_.contains(id))
             return id;
         attempts++;
     }
     return 0;
 }
-
-bool ClientConnection::HasPlayer() const {
-    return !player_.expired();
-}
-
-std::shared_ptr<Player> ClientConnection::GetPlayer() const {
-    return player_.lock();
-}
-
-void ClientConnection::SetPlayer(std::weak_ptr<Player> player) {
-    player_ = player;
-}
-
-void ClientConnection::ClearPlayer() {
-    player_.reset();
-}
-
-// TODO Move to registry
-// --- NEW: Dirty Flag Management ---
-// Atomic ensures we don't crash if the Tick thread and Network thread touch this at the same time
-bool IsDirty() const { return is_dirty_; }
-void SetDirty(bool val) { is_dirty_ = val; }

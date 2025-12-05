@@ -43,6 +43,11 @@ add_executable(DyeWarsServer ${SOURCES} ${HEADERS}
         src/network/packets/incoming/PacketHandler.h
         src/network/packets/outgoing/PacketSender.h
         src/game/Actions.h
+        src/game/Tilemap.cpp
+        src/game/TileMap.h
+        src/game/handlers/MoveHandler.cpp
+        src/game/handlers/MoveHandler.h
+        src/game/Actions.cpp
 )
 
 # Link libraries

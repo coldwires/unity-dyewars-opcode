@@ -5,9 +5,9 @@
 #pragma once
 #include <memory>
 #include <vector>
+
 class ClientConnection;
 class GameServer;
-using namespace std;
 
 namespace PacketHandler {
     void Handle(
@@ -15,4 +15,4 @@ namespace PacketHandler {
             const std::vector<uint8_t> &data,
             GameServer *server
                 );
-};
+}

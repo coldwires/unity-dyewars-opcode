@@ -1,6 +1,6 @@
 #pragma once
 #include <memory>
-#include <map>
+#include <unordered_map>
 #include <mutex>
 #include <functional>
 
@@ -8,7 +8,6 @@ class ClientConnection;
 
 class ClientManager {
 public:
-
 	/// <summary>
 	/// adds client to client list
 	/// </summary>
@@ -24,16 +23,15 @@ public:
 	/// </summary>
 	void CloseAll();
 
-	std::shared_ptr<ClientConnection> GetClientCopy(uint32_t client_id);
-	ClientConnection* GetClientPtr(uint32_t id);
+	std::shared_ptr<ClientConnection> GetClientCopy(uint64_t client_id);
+	ClientConnection* GetClientPtr(uint64_t id);
 
-	void BroadcastToOthers(uint32_t exclude_id, const std::function<void(const std::shared_ptr<ClientConnection>&)>& action);
+	void BroadcastToOthers(uint64_t exclude_id, const std::function<void(const std::shared_ptr<ClientConnection>&)>& action);
 	void BroadcastToAll(const std::function<void(const std::shared_ptr<ClientConnection>&)> &action);
 
 	size_t Count();
 
 private:
-
-	std::map<uint32_t, std::shared_ptr<ClientConnection>> clients_;
+	std::unordered_map<uint64_t, std::shared_ptr<ClientConnection>> clients_;
 	std::mutex mutex_;
 };

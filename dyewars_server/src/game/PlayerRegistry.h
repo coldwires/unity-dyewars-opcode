@@ -7,9 +7,10 @@
 #include <queue>
 #include <variant>
 #include <unordered_map>
-#include <cassert>
+#include <random>
 #include "Player.h"
-using namespace std;
+#include "Actions.h"
+#include "server/ClientManager.h"
 
 enum class SpawnPoints : uint32_t {
     mainArea = 0x00050005,
@@ -27,8 +28,10 @@ class TileMap;
 
 class PlayerRegistry {
 public:
+    // Lifecycle
+    void Login(uint64_t client_id);
+    void Logout();
     std::shared_ptr<Player> CreatePlayer(uint64_t client_id);
-
     void RemovePlayer(uint64_t player_id);
     void RemoveByClientID(uint64_t client_id);
 
@@ -37,11 +40,13 @@ public:
     std::shared_ptr<Player> GetByClientID(uint64_t client_id);
     uint64_t GetPlayerIDForClient(uint64_t client_id);
 
-    // Command queue
-    void QueueAction(Action action, uint64_t client_id);
+    // Command queue (called from packet handlers on io thread)
+    void QueueAction(const Actions::Action &action, uint64_t client_id);
 
     // Process all queued commands (called from game loop)
-    std::vector<std::shared_ptr<Player>> ProcessCommands(TileMap& map);
+    std::vector<std::shared_ptr<Player>> ProcessCommands(
+            TileMap& map,
+            ClientManager &manager);
 
     // Queries
     std::vector<std::shared_ptr<Player>> GetAllPlayers();
@@ -49,13 +54,12 @@ public:
     size_t Count();
 
 private:
+    uint64_t GenerateUniqueID();
 
-    std::queue<Action> action_queue_;
-    queue<MoveCommand> move_queue_;
-
+    std::queue<Actions::Action> action_queue_;
     std::unordered_map<uint64_t, std::shared_ptr<Player>> players_;
     std::unordered_map<uint32_t, uint32_t> client_to_player_;
-    mutex mutex_;
+    std::mutex mutex_;
 
     std::atomic<bool> is_dirty_{false};
 

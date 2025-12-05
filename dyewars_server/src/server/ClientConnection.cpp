@@ -2,24 +2,23 @@
 #include "GameServer.h" // Needed here to call Server methods
 #include "network/BandwidthMonitor.h"
 #include "network/Packets/OpCodes.h"
-#include <iomanip>
-#include <fstream>
+#include "network/packets/incoming/PacketHandler.h"
 #include <core/Log.h>
+#include <fstream>
+#include <iomanip>
 using namespace Protocol::Opcode;
 
 ClientConnection::ClientConnection(asio::ip::tcp::socket socket,
-                                   std::shared_ptr<LuaGameEngine> engine,
                                    GameServer* server,
                                    uint64_t client_id)
         : socket_(std::move(socket)),
-        lua_engine_(engine),
         server_(server),
         client_id_(client_id),
         handshake_timer_(socket_.get_executor())
         {
             try{
                 client_ip_ = socket.remote_endpoint().address().to_string();
-                //DNS lookup is slow, move to worker thread
+                // TODO DNS lookup is slow, move to worker thread
                 client_hostname_ = client_ip_;
             } catch (...) {
                 client_ip_ = "unknown";
@@ -46,11 +45,11 @@ void ClientConnection::Start() {
 }
 
 void ClientConnection::Disconnect(const std::string& reason) {
-    if (auto player = player_.lock())
-    {
-        // TODO Don't broadcast yet.
-        server_->Players().RemovePlayer();
+    if (!reason.empty()) {
+        Log::Debug("Client {} disconnecting: {}", client_id_, reason);
     }
+
+    server_->Players().RemoveByClientID(client_id_);
     server_->Clients().RemoveClient(client_id_);
     server_->Limiter().RemoveConnection(client_ip_);
     CloseSocket();
@@ -61,6 +60,7 @@ void ClientConnection::CloseSocket() {
     std::error_code ec;
     handshake_timer_.cancel();
     if (socket_.is_open()) {
+        socket_.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
         socket_.close(ec);
     }
 }
@@ -90,8 +90,8 @@ void ClientConnection::RawSend(std::shared_ptr<std::vector<uint8_t>> data) {
             // Error handling
         });
 }
-/// Receive
 
+/// Receive
 void ClientConnection::ReadPacketHeader() {
     auto self(shared_from_this());
     asio::async_read(socket_, asio::buffer(header_buffer_, 4),
@@ -101,8 +101,6 @@ void ClientConnection::ReadPacketHeader() {
                                  Disconnect("connection closed before handshake");
                              } else {
                                  Log::Info("Client {} disconnected.", client_id_);
-                                 // Not Here, only in player registry
-                                 //BroadcastPlayerLeft();
                              }
                              return;
                          }
@@ -111,17 +109,17 @@ void ClientConnection::ReadPacketHeader() {
                              header_buffer_[1] == Protocol::MAGIC_2) {
                              uint16_t size = (header_buffer_[2] << 8) | header_buffer_[3];
 
-                             if (size > 0 && size < 4096) {
+                             if (size > 0 && size < Protocol::MAX_PAYLOAD_SIZE) {
                                  ReadPacketPayload(size);
                              } else {
-                                 Log::Warn("Invalid size (over 4096).");
-                                 ReadPacketHeader();
+                                 Log::Warn("Client {} sent invalid size: {}", client_id_, size);
+                                 if(socket_.is_open()) ReadPacketHeader();
                              }
                          } else {
                              // Invalid magic bytes
                              if (!handshake_complete_) {
-                                 Log::Debug("Invalid magic bytes when expecting handshake. Got 0x{} 0x{}",
-                                            (int)header_buffer_[0],(int)header_buffer_[1]);
+                                 Log::Debug("Invalid magic bytes from client: {} when expecting handshake. Got 0x{:02X} 0x{:02X}",
+                                           client_id_, (int)header_buffer_[0],(int)header_buffer_[1]);
                                  FailHandshake("invalid header while waiting for handshake");
                              } else {
                                  ReadPacketHeader();
@@ -136,18 +134,19 @@ void ClientConnection::ReadPacketPayload(uint16_t size) {
     asio::async_read(socket_,
                      asio::buffer(*buffer),
                      [this, self, buffer, size](std::error_code ec, std::size_t) {
-                         if (size < 0 || size > 4096) {
-                             Log::Warn("Packet payload size incorrect: {}", size);
-                             ReadPacketHeader();
+                         if (ec) {
+                             Disconnect("read error");
+                             return;
                          }
-                         if (!ec) {
-                             LogPacketReceived(*buffer, size);
-                             // If handshake not complete, this must be the handshake packet
-                             if (!handshake_complete_) {
-                                 HandleHandshakePacket(*buffer);
-                             } else {
-                                 HandlePacket(*buffer);
-                             }
+
+
+                         BandwidthMonitor::Instance().RecordIncoming(size + 4);  // payload + header
+                         LogPacketReceived(*buffer, size);
+                         // If handshake not complete, this must be the handshake packet
+                         if (!handshake_complete_) {
+                             HandleHandshakePacket(*buffer);
+                         } else {
+                             HandlePacket(*buffer);
                          }
                          // Only continue reading if socket is still open
                          if (socket_.is_open()) {
@@ -156,66 +155,10 @@ void ClientConnection::ReadPacketPayload(uint16_t size) {
                      });
 }
 
-// TODO Fix
 void ClientConnection::HandlePacket(const std::vector<uint8_t>& data) {
     if (data.empty()) return;
-
-    size_t offset = 0;
-    uint8_t msg_type = Protocol::PacketReader::ReadByte(data, offset);//data[0];
-
-    switch (msg_type) {
-        case Protocol::Opcode::Movement::C_Move_Request: // Move
-            if (data.size() >= 3) {
-                uint8_t direction = Protocol::PacketReader::ReadByte(data, offset);
-                uint8_t facing = Protocol::PacketReader::ReadByte(data, offset);
-
-                //only move if direction matches facing
-                if(direction == facing && direction == player_->GetFacing()) {
-
-
-                    bool moved = player_->AttemptMove(direction, server_->GetMap());
-
-                    if (moved) {
-                        is_dirty_ = true;
-                        SendPosition();
-
-                        //This would block the networking thread (even though lua should be fast and only calling events)
-                        //lua_engine_->OnPlayerMoved(player_->GetID(), player_->GetX(), player_->GetY());
-
-                    } else {
-                        // We hit a wall. Send position anyway to "Rubber Band" the client back to reality.
-                        SendPosition();
-                    }
-                } else {
-                    //Mismatch: turn player to match and send correction
-                    player_->SetFacing(direction);
-                    SendFacingUpdate(player_->GetFacing());
-                }
-            }
-            break;
-
-        case Protocol::Opcode::Movement::C_Turn_Request: //Turn
-            if(data.size() >= 2)
-            {
-                uint8_t direction = Protocol::PacketReader::ReadByte(data, offset);
-                player_->SetFacing(direction);
-                is_dirty_ = true;       //Broadcast facing change to others
-                SendFacingUpdate(player_->GetFacing());
-            }
-            break;
-//       " case Protocol::Opcode::Movement::  C_RequestPosition: // Request Pos
-//            SendPosition();
-//            break;"
-            /*
-                case Protocol::Opcode::C_Custom: // Custom
-            {
-                std::vector<uint8_t> custom(data.begin() + 1, data.end());
-                auto resp = lua_engine_->ProcessCustomMessage(custom);
-                if (!resp.empty()) SendCustomMessage(resp);
-            }
-                break;
-             */
-    }
+    // Forward to PacketHandler - we don't process game logic here
+    PacketHandler::Handle(shared_from_this(), data, server_);
 }
 
 // ============================================================================
@@ -284,21 +227,7 @@ void ClientConnection::CompleteHandshake() {
     handshake_timer_.cancel();
     handshake_complete_ = true;
 
-    // Add to client manager
-    server_->Clients().AddClient(shared_from_this());
-
-    // TODO Continue to wherever
-
-    player_ = std::make_unique<Player>(player_id_, 0, 0);
-
-    std::cout << "IP:" << client_ip_ << " Hostname:" << client_hostname_
-              << " handshake successful. Player ID: " << player_->GetID() << std::endl;
-
-    // Now send the player their info
-    SendPlayerID();
-    SendPosition();
-    SendAllPlayers();
-    BroadcastPlayerJoined();
+    server_->OnClientLogin(shared_from_this());
 }
 
 void ClientConnection::FailHandshake(const std::string& reason) {

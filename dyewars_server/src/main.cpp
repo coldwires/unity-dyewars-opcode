@@ -1,9 +1,14 @@
+/// =======================================
+/// DyeWarsServer
+/// Created by Anonymous on Dec 05, 2025
+/// =======================================
 #include <iostream>
 #include <memory>
 #include <thread>
 #include "server/GameServer.h"
 #include "network/BandwidthMonitor.h"
 #include "core/Log.h"
+
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -11,8 +16,12 @@
 int main() {
     /// Only for displaying color in terminal
 #ifdef _WIN32
-    SetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE),
-        ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD dwMode = 0;
+    GetConsoleMode(hOut, &dwMode);
+    SetConsoleMode(hOut, dwMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+    //SetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE),
+    //    ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
 #endif
 
     std::unique_ptr<asio::io_context> io_context;
@@ -78,12 +87,31 @@ int main() {
         }
         else if (cmd == "stats") {
             std::cout << BandwidthMonitor::Instance().GetStats() << std::endl;
+            if (server) {
+                std::cout << "Clients: " << server->Clients().Count()
+                          << " Players: " << server->Players().Count() << std::endl;
+            }
         }
         else if (cmd == "status") {
             Log::Info("Server is {}", server ? "running" : "stopped");
         }
+        else if (cmd == "debug") {
+            Log::Level = 0;
+            Log::Info("Log level set to TRACE");
+        }
         else if (cmd == "help") {
-            std::cout << "Commands: start, stop, restart, r (reload), stats, status, exit\n";
+            std::cout << "Commands:\n"
+                      << "  start    - Start the server\n"
+                      << "  stop     - Stop the server\n"
+                      << "  restart  - Restart the server\n"
+                      << "  r/reload - Reload Lua scripts\n"
+                      << "  stats    - Show bandwidth and player stats\n"
+                      << "  status   - Show server status\n"
+                      << "  debug    - Enable trace logging\n"
+                      << "  exit     - Stop server and exit\n";
+        }
+        else if (!cmd.empty()) {
+            std::cout << "Unknown command. Type 'help' for available commands.\n";
         }
     }
 
