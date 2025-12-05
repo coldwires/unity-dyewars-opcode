@@ -155,6 +155,21 @@ void GameServer::StartAccept() {
 }
 
 void GameServer::ProcessTick() {
+    // Process all queued commands
+    auto moved_players = players_.ProcessCommands(world_.GetMap());
+
+    // Broadcast updates
+    for (const auto& player : moved_players) {
+        uint32_t player_id = player->GetID();
+        int16_t x = player->GetX();
+        int16_t y = player->GetY();
+        uint8_t facing = player->GetFacing();
+
+        clients_.BroadcastToAll([=](const auto& conn) {
+            Packets::Send::PlayerUpdate(conn, player_id, x, y, facing);
+        });
+    }
+
     auto dirty_players = players_.GetDirtyPlayers();
     if (dirty_players.empty()) return;
 

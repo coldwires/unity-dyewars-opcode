@@ -4,15 +4,20 @@
 
 
 void ClientManager::AddClient(const std::shared_ptr<ClientConnection> &client) {
+		assert(client && "AddClient: null client");
+		assert(client->GetClientID() != 0 && "AddClient: invalid ID");
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
-		clients_[client->GetPlayerID()] = client;
+		clients_[client->GetClientID()] = client;
 	}
 }
 
-void ClientManager::RemoveClient(uint32_t client_id) {
-	std::lock_guard<std::mutex> lock(mutex_);
-	clients_.erase(client_id);
+void ClientManager::RemoveClient(uint64_t client_id) {
+	assert(client_id != 0);
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		clients_.erase(client_id);
+	}
 }
 
 std::shared_ptr<ClientConnection> ClientManager::GetClientCopy(uint32_t client_id) {

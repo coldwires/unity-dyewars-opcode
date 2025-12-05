@@ -6,6 +6,8 @@
 #include "lua/LuaEngine.h"
 #include "network/ConnectionLimiter.h"
 #include "game/GameMap.h"
+#include "game/PlayerRegistry.h"
+#include "game/World.h"
 
 class GameServer {
 public:

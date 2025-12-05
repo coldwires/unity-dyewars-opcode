@@ -34,6 +34,7 @@ ClientConnection::~ClientConnection(){
         // Ignore errors during destruction
     }
 }
+
 void ClientConnection::Start() {
     Log::Info("IP: {} Hostname: {} starting client connection.",client_ip_, client_hostname_);
 
@@ -47,11 +48,13 @@ void ClientConnection::Start() {
 void ClientConnection::Disconnect(const std::string& reason) {
     if (auto player = player_.lock())
     {
+        // TODO Don't broadcast yet.
         server_->Players().RemovePlayer();
     }
-
+    server_->Clients().RemoveClient(client_id_);
     server_->Limiter().RemoveConnection(client_ip_);
     CloseSocket();
+    Log::Debug("Client {} IP: {} disconnected.", client_id_, client_ip_);
 }
 
 void ClientConnection::CloseSocket() {
@@ -62,26 +65,10 @@ void ClientConnection::CloseSocket() {
     }
 }
 
-bool ClientConnection::HasPlayer() const {
-    return !player_.expired();
-}
-
-std::shared_ptr<Player> ClientConnection::GetPlayer() const {
-    return player_.lock();
-}
-
-void ClientConnection::SetPlayer(std::weak_ptr<Player> player) {
-    player_ = player;
-}
-
-void ClientConnection::ClearPlayer() {
-    player_.reset();
-}
-
 // =====================
 // PACKETS
 // =====================
-
+/// Send
 void ClientConnection::SendPacket(const Protocol::Packet& pkt) {
     auto self(shared_from_this());
     auto data = std::make_shared<std::vector<uint8_t>>(pkt.ToBytes());
@@ -102,6 +89,133 @@ void ClientConnection::RawSend(std::shared_ptr<std::vector<uint8_t>> data) {
         [this, self, data](std::error_code ec, std::size_t) {
             // Error handling
         });
+}
+/// Receive
+
+void ClientConnection::ReadPacketHeader() {
+    auto self(shared_from_this());
+    asio::async_read(socket_, asio::buffer(header_buffer_, 4),
+                     [this, self](std::error_code ec, std::size_t) {
+                         if (ec) {
+                             if (!handshake_complete_) {
+                                 Disconnect("connection closed before handshake");
+                             } else {
+                                 Log::Info("Client {} disconnected.", client_id_);
+                                 // Not Here, only in player registry
+                                 //BroadcastPlayerLeft();
+                             }
+                             return;
+                         }
+
+                         if (header_buffer_[0] == Protocol::MAGIC_1 &&
+                             header_buffer_[1] == Protocol::MAGIC_2) {
+                             uint16_t size = (header_buffer_[2] << 8) | header_buffer_[3];
+
+                             if (size > 0 && size < 4096) {
+                                 ReadPacketPayload(size);
+                             } else {
+                                 Log::Warn("Invalid size (over 4096).");
+                                 ReadPacketHeader();
+                             }
+                         } else {
+                             // Invalid magic bytes
+                             if (!handshake_complete_) {
+                                 Log::Debug("Invalid magic bytes when expecting handshake. Got 0x{} 0x{}",
+                                            (int)header_buffer_[0],(int)header_buffer_[1]);
+                                 FailHandshake("invalid header while waiting for handshake");
+                             } else {
+                                 ReadPacketHeader();
+                             }
+                         }
+                     });
+}
+
+void ClientConnection::ReadPacketPayload(uint16_t size) {
+    auto self(shared_from_this());
+    auto buffer = std::make_shared<std::vector<uint8_t>>(size);
+    asio::async_read(socket_,
+                     asio::buffer(*buffer),
+                     [this, self, buffer, size](std::error_code ec, std::size_t) {
+                         if (size < 0 || size > 4096) {
+                             Log::Warn("Packet payload size incorrect: {}", size);
+                             ReadPacketHeader();
+                         }
+                         if (!ec) {
+                             LogPacketReceived(*buffer, size);
+                             // If handshake not complete, this must be the handshake packet
+                             if (!handshake_complete_) {
+                                 HandleHandshakePacket(*buffer);
+                             } else {
+                                 HandlePacket(*buffer);
+                             }
+                         }
+                         // Only continue reading if socket is still open
+                         if (socket_.is_open()) {
+                             ReadPacketHeader();
+                         }
+                     });
+}
+
+// TODO Fix
+void ClientConnection::HandlePacket(const std::vector<uint8_t>& data) {
+    if (data.empty()) return;
+
+    size_t offset = 0;
+    uint8_t msg_type = Protocol::PacketReader::ReadByte(data, offset);//data[0];
+
+    switch (msg_type) {
+        case Protocol::Opcode::Movement::C_Move_Request: // Move
+            if (data.size() >= 3) {
+                uint8_t direction = Protocol::PacketReader::ReadByte(data, offset);
+                uint8_t facing = Protocol::PacketReader::ReadByte(data, offset);
+
+                //only move if direction matches facing
+                if(direction == facing && direction == player_->GetFacing()) {
+
+
+                    bool moved = player_->AttemptMove(direction, server_->GetMap());
+
+                    if (moved) {
+                        is_dirty_ = true;
+                        SendPosition();
+
+                        //This would block the networking thread (even though lua should be fast and only calling events)
+                        //lua_engine_->OnPlayerMoved(player_->GetID(), player_->GetX(), player_->GetY());
+
+                    } else {
+                        // We hit a wall. Send position anyway to "Rubber Band" the client back to reality.
+                        SendPosition();
+                    }
+                } else {
+                    //Mismatch: turn player to match and send correction
+                    player_->SetFacing(direction);
+                    SendFacingUpdate(player_->GetFacing());
+                }
+            }
+            break;
+
+        case Protocol::Opcode::Movement::C_Turn_Request: //Turn
+            if(data.size() >= 2)
+            {
+                uint8_t direction = Protocol::PacketReader::ReadByte(data, offset);
+                player_->SetFacing(direction);
+                is_dirty_ = true;       //Broadcast facing change to others
+                SendFacingUpdate(player_->GetFacing());
+            }
+            break;
+//       " case Protocol::Opcode::Movement::  C_RequestPosition: // Request Pos
+//            SendPosition();
+//            break;"
+            /*
+                case Protocol::Opcode::C_Custom: // Custom
+            {
+                std::vector<uint8_t> custom(data.begin() + 1, data.end());
+                auto resp = lua_engine_->ProcessCustomMessage(custom);
+                if (!resp.empty()) SendCustomMessage(resp);
+            }
+                break;
+             */
+    }
 }
 
 // ============================================================================
@@ -170,8 +284,12 @@ void ClientConnection::CompleteHandshake() {
     handshake_timer_.cancel();
     handshake_complete_ = true;
 
+    // Add to client manager
+    server_->Clients().AddClient(shared_from_this());
+
+    // TODO Continue to wherever
+
     player_ = std::make_unique<Player>(player_id_, 0, 0);
-    server_->RegisterSession(shared_from_this());
 
     std::cout << "IP:" << client_ip_ << " Hostname:" << client_hostname_
               << " handshake successful. Player ID: " << player_->GetID() << std::endl;
@@ -184,13 +302,14 @@ void ClientConnection::CompleteHandshake() {
 }
 
 void ClientConnection::FailHandshake(const std::string& reason) {
-    Log::Warn("IP: {} Hostname: {} handshake failed {}.", client_ip_, client_hostname_, reason);
+    Log::Warn("IP: {} Hostname: {} handshake failed because: {}.", client_ip_, client_hostname_, reason);
     server_->Limiter().RecordFailure(client_ip_);
     LogFailedConnection(reason);
-    CloseSocket();
-    
+    Disconnect(reason);
 }
-
+/// =============================\n
+/// LOGGING\n
+/// =============================\n
 void ClientConnection::LogFailedConnection(const std::string& reason) {
     std::ofstream logfile("failed_connections.log", std::ios::app);
     if (logfile.is_open()) {
@@ -203,128 +322,6 @@ void ClientConnection::LogFailedConnection(const std::string& reason) {
         logfile << "  Hostname: " << client_hostname_ << "\n";
         logfile << "  Reason: " << reason << "\n";
         logfile << "---\n";
-    }
-}
-
-void ClientConnection::ReadPacketHeader() {
-    auto self(shared_from_this());
-    asio::async_read(socket_, asio::buffer(header_buffer_, 4),
-                     [this, self](std::error_code ec, std::size_t) {
-                         if (ec) {
-                             if (!handshake_complete_) {
-                                 // Connection closed before handshake
-                                 Disconnect("connection closed before handshake");
-                             } else {
-                                 std::cout << "Player " << player_->GetID() << " disconnected" << std::endl;
-                                 BroadcastPlayerLeft();
-                             }
-                             return;
-                         }
-
-                         if (header_buffer_[0] == Protocol::MAGIC_1 && header_buffer_[1] == Protocol::MAGIC_2) {
-                             uint16_t size = (header_buffer_[2] << 8) | header_buffer_[3];
-
-                             if (size > 0 && size < 4096) {
-                                 ReadPacketPayload(size);
-                             } else {
-                                 std::cout << "[DEBUG] Invalid size (over 4096)." << std::endl;
-                                 ReadPacketHeader();
-                             }
-                         } else {
-                             // Invalid magic bytes
-                             if (!handshake_complete_) {
-                                 std::ostringstream oss;
-                                 oss << "invalid magic bytes (got 0x" << std::hex
-                                     << (int)header_buffer_[0] << " 0x" << (int)header_buffer_[1] << ")";
-                                 FailHandshake(oss.str());
-                             } else {
-                                 ReadPacketHeader();
-                             }
-                         }
-                     });
-}
-
-void ClientConnection::ReadPacketPayload(uint16_t size) {
-    auto self(shared_from_this());
-    auto buffer = std::make_shared<std::vector<uint8_t>>(size);
-    asio::async_read(socket_,
-                     asio::buffer(*buffer),
-                     [this, self, buffer, size](std::error_code ec, std::size_t)
-                     {
-                         if (!ec) {
-                             LogPacketReceived(*buffer, size);
-                             // If handshake not complete, this must be the handshake packet
-                             if (!handshake_complete_) {
-                                 HandleHandshakePacket(*buffer);
-                             } else {
-                                 HandlePacket(*buffer);
-                             }
-                         }
-                         // Only continue reading if socket is still open
-                         if (socket_.is_open()) {
-                             ReadPacketHeader();
-                         }
-                     });
-}
-
-void ClientConnection::HandlePacket(const std::vector<uint8_t>& data) {
-    if (data.empty()) return;
-
-    size_t offset = 0;
-    uint8_t msg_type = Protocol::PacketReader::ReadByte(data, offset);//data[0];
-
-    switch (msg_type) {
-        case Protocol::Opcode::Movement::C_Move_Request: // Move
-            if (data.size() >= 3) {
-                uint8_t direction = Protocol::PacketReader::ReadByte(data, offset);
-                uint8_t facing = Protocol::PacketReader::ReadByte(data, offset);
-
-                //only move if direction matches facing
-                if(direction == facing && direction == player_->GetFacing()) {
-
-
-                    bool moved = player_->AttemptMove(direction, server_->GetMap());
-
-                    if (moved) {
-                        is_dirty_ = true;
-                        SendPosition();
-
-                        //This would block the networking thread (even though lua should be fast and only calling events)
-                        //lua_engine_->OnPlayerMoved(player_->GetID(), player_->GetX(), player_->GetY());
-
-                    } else {
-                        // We hit a wall. Send position anyway to "Rubber Band" the client back to reality.
-                        SendPosition();
-                    }
-                } else {
-                    //Mismatch: turn player to match and send correction
-                    player_->SetFacing(direction);
-                    SendFacingUpdate(player_->GetFacing());
-                }
-            }
-            break;
-
-        case Protocol::Opcode::Movement::C_Turn_Request: //Turn
-            if(data.size() >= 2)
-            {
-                uint8_t direction = Protocol::PacketReader::ReadByte(data, offset);
-                player_->SetFacing(direction);
-                is_dirty_ = true;       //Broadcast facing change to others
-                SendFacingUpdate(player_->GetFacing());
-            }
-            break;
-//       " case Protocol::Opcode::Movement::  C_RequestPosition: // Request Pos
-//            SendPosition();
-//            break;"
-        /*
-            case Protocol::Opcode::C_Custom: // Custom
-        {
-            std::vector<uint8_t> custom(data.begin() + 1, data.end());
-            auto resp = lua_engine_->ProcessCustomMessage(custom);
-            if (!resp.empty()) SendCustomMessage(resp);
-        }
-            break;
-         */
     }
 }
 

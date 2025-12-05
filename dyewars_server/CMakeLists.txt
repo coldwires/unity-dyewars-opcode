@@ -34,7 +34,16 @@ file(GLOB_RECURSE HEADERS
 
 add_executable(DyeWarsServer ${SOURCES} ${HEADERS}
         src/core/Log.h
-        src/network/packets/Sender.h "src/server/ClientManager.h" "src/server/ClientManager.cpp" "src/network/ConnectionLimiter.h" "src/network/ConnectionLimiter.cpp")
+        src/network/packets/Sender.h "src/server/ClientManager.h" "src/server/ClientManager.cpp" "src/network/ConnectionLimiter.h" "src/network/ConnectionLimiter.cpp"
+        src/game/PlayerRegistry.cpp
+        src/game/PlayerRegistry.h
+        src/game/World.cpp
+        src/game/World.h
+        src/network/packets/incoming/PacketHandler.cpp
+        src/network/packets/incoming/PacketHandler.h
+        src/network/packets/outgoing/PacketSender.h
+        src/game/Actions.h
+)
 
 # Link libraries
 target_link_libraries(DyeWarsServer PRIVATE

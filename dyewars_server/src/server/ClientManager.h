@@ -1,6 +1,6 @@
 #pragma once
 #include <memory>
-#include <unordered_map>
+#include <map>
 #include <mutex>
 #include <functional>
 
@@ -17,7 +17,7 @@ public:
 	/// <summary>
 	/// Removes client
 	/// </summary>
-	void RemoveClient(uint32_t player_id);
+	void RemoveClient(uint64_t client_id);
 
 	/// <summary>
 	/// Close all client sockets
@@ -36,6 +36,4 @@ private:
 
 	std::map<uint32_t, std::shared_ptr<ClientConnection>> clients_;
 	std::mutex mutex_;
-
-	
 };
