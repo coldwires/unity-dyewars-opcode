@@ -18,7 +18,7 @@ LuaGameEngine::~LuaGameEngine() {
     }
 }
 
-void LuaGameEngine::OnPlayerMoved(uint32_t player_id, int x, int y, uint8_t direction) {
+void LuaGameEngine::OnPlayerMoved(uint64_t player_id, int x, int y, uint8_t direction) {
     // 1. Lock the Mutex (Thread Safety)
     std::lock_guard<std::mutex> lock(lua_mutex_);
 
@@ -29,20 +29,20 @@ void LuaGameEngine::OnPlayerMoved(uint32_t player_id, int x, int y, uint8_t dire
         // 3. Call it only if it exists
         if (on_move.valid()) {
             // Pass data to Lua
-            // We use sol::protected_function_result to catch Lua errors without crashing C++
-            auto result = on_move(player_id, x, y, direction);
+            // Note: player_id passed as string because Lua's double can't represent uint64_t accurately
+            auto result = on_move(std::to_string(player_id), x, y, direction);
 
             if (!result.valid()) {
                 sol::error err = result;
                 std::cout << "LUA ERROR (OnMove): " << err.what() << std::endl;
             }
         }
-    } catch (const std::exception& e) {
+    } catch (const std::exception &e) {
         std::cout << "Lua Exception: " << e.what() << std::endl;
     }
 }
 
-bool LuaGameEngine::ProcessMove(int& x, int& y, uint8_t direction) {
+bool LuaGameEngine::ProcessMove(int &x, int &y, uint8_t direction) {
     std::lock_guard<std::mutex> lock(lua_mutex_);
     try {
         sol::function move_func = lua_["process_move_command"];
@@ -57,13 +57,13 @@ bool LuaGameEngine::ProcessMove(int& x, int& y, uint8_t direction) {
                 return true;
             }
         }
-    } catch (const std::exception& e) {
+    } catch (const std::exception &e) {
         std::cout << "LUA ERROR: " << e.what() << std::endl;
     }
     return false;
 }
 
-std::vector<uint8_t> LuaGameEngine::ProcessCustomMessage(const std::vector<uint8_t>& data) {
+std::vector<uint8_t> LuaGameEngine::ProcessCustomMessage(const std::vector<uint8_t> &data) {
     std::lock_guard<std::mutex> lock(lua_mutex_);
     try {
         sol::function custom_func = lua_["process_custom_message"];
@@ -81,7 +81,7 @@ std::vector<uint8_t> LuaGameEngine::ProcessCustomMessage(const std::vector<uint8
             }
             return response;
         }
-    } catch (const std::exception& e) {
+    } catch (const std::exception &e) {
         std::cout << "LUA ERROR: " << e.what() << std::endl;
     }
     return {};
@@ -95,7 +95,7 @@ void LuaGameEngine::ReloadScripts() {
         SetupLuaEnvironment();
         LoadScript(active_script_path_);
         std::cout << "Scripts reloaded successfully!\n" << std::endl;
-    } catch (const std::exception& e) {
+    } catch (const std::exception &e) {
         std::cout << "Failed to reload: " << e.what() << "\n" << std::endl;
     }
 }
@@ -105,7 +105,7 @@ void LuaGameEngine::SetupLuaEnvironment() {
 
     lua_.set_function("log", [this](sol::variadic_args args) {
         std::cout << "[LUA] ";
-        for (auto arg : args) {
+        for (auto arg: args) {
             // "tostring" is a Lua function that converts ANYTHING to text safely
             std::string str = lua_["tostring"](arg);
             std::cout << str << " ";
@@ -135,7 +135,7 @@ log("Game script loaded!")
     file.close();
 }
 
-void LuaGameEngine::LoadScript(const std::string& filename) {
+void LuaGameEngine::LoadScript(const std::string &filename) {
     // 1. Search for the file (Current Dir -> Up 1 -> Up 2 -> Up 3)
     std::string search_paths[] = {
             filename,
@@ -146,7 +146,7 @@ void LuaGameEngine::LoadScript(const std::string& filename) {
 
     std::string found_path = "";
 
-    for (const auto& path : search_paths) {
+    for (const auto &path: search_paths) {
         if (fs::exists(path)) {
             found_path = path;
             break;
@@ -169,7 +169,7 @@ void LuaGameEngine::LoadScript(const std::string& filename) {
             sol::error err = result;
             std::cout << "Script error: " << err.what() << std::endl;
         }
-    } catch (const std::exception& e) {
+    } catch (const std::exception &e) {
         std::cout << "Exception: " << e.what() << std::endl;
     }
 }

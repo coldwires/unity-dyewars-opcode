@@ -31,41 +31,16 @@ namespace DyeWars.Core
     /// </summary>
     public struct LocalPlayerIdAssignedEvent
     {
-        public uint PlayerId;
+        public ulong PlayerId;
     }
 
     // ========================================================================
     // PLAYER EVENTS - Fired when player state changes
     // ========================================================================
 
-    /// <summary>
-    /// Fired when a player's position changes (local or remote).
-    /// </summary>
-    public struct OtherPlayerPositionChangedEvent
-    {
-        public uint PlayerId;
-        public Vector2Int Position;
-        public bool IsCorrection;  // True if this is a server correction
-    }
-
     public struct LocalPlayerPositionCorrectedEvent
     {
         public Vector2Int Position;
-    }
-
-    public struct LocalPlayerPositionChangedEvent
-    {
-        public Vector2Int Position;
-        public bool IsCorrection;  // True if this is a server correction
-    }
-
-    /// <summary>
-    /// Fired when a player's facing direction changes.
-    /// </summary>
-    public struct OtherPlayerFacingChangedEvent
-    {
-        public uint PlayerId;
-        public int Facing;
     }
 
     public struct LocalPlayerFacingChangedEvent
@@ -78,7 +53,7 @@ namespace DyeWars.Core
     /// </summary>
     public struct PlayerJoinedEvent
     {
-        public uint PlayerId;
+        public ulong PlayerId;
         public Vector2Int Position;
         public int Facing;
     }
@@ -88,7 +63,36 @@ namespace DyeWars.Core
     /// </summary>
     public struct PlayerLeftEvent
     {
-        public uint PlayerId;
+        public ulong PlayerId;
+    }
+
+    /// <summary>
+    /// Fired when server sends a batch update with remote player positions.
+    /// </summary>
+    public struct RemotePlayerUpdateEvent
+    {
+        public ulong PlayerId;
+        public Vector2Int Position;
+        public int Facing;
+    }
+
+    /// <summary>
+    /// Fired when server sends welcome packet with our player ID.
+    /// </summary>
+    public struct WelcomeReceivedEvent
+    {
+        public ulong PlayerId;
+        public Vector2Int Position;
+        public int Facing;
+    }
+
+    /// <summary>
+    /// Fired when server sends a pong response.
+    /// </summary>
+    public struct PongReceivedEvent
+    {
+        public uint Timestamp;
+        public uint LatencyMs;
     }
 
     /// <summary>

@@ -53,6 +53,8 @@ namespace DyeWars.Player
         // UNITY LIFECYCLE
         // ====================================================================
 
+        private bool isInitialized = false;
+
         private void Start()
         {
             // Cache service references
@@ -60,20 +62,9 @@ namespace DyeWars.Player
             playerRegistry = ServiceLocator.Get<PlayerRegistry>();
             gridService = ServiceLocator.Get<GridService>();
             inputService = ServiceLocator.Get<InputService>();
-            
-            Debug.Log($"LocalPlayerController.Start - networkService: {(networkService != null ? "OK" : "NULL")}");
-            Debug.Log($"LocalPlayerController.Start - playerRegistry: {(playerRegistry != null ? "OK" : "NULL")}");
-            Debug.Log($"LocalPlayerController.Start - gridService: {(gridService != null ? "OK" : "NULL")}");
-            Debug.Log($"LocalPlayerController.Start - inputService: {(inputService != null ? "OK" : "NULL")}");
-
 
             // Get the view component on this GameObject
             playerView = GetComponent<PlayerView>();
-            
-            // Initialize immediately since we're instantiated AFTER the player ID was assigned
-            // (PlayerViewFactory creates us in response to LocalPlayerIdAssignedEvent,
-            // so that event has already fired by the time we exist)
-            InitializeFromRegistry();
         }
 
         private void OnEnable()
@@ -82,23 +73,23 @@ namespace DyeWars.Player
             EventBus.Subscribe<LocalPlayerPositionCorrectedEvent>(OnLocalPlayerPositionCorrected);
             EventBus.Subscribe<LocalPlayerFacingChangedEvent>(OnLocalPlayerFacingChanged);
         }
-        
+
         /// <summary>
-        /// Initialize state from PlayerRegistry. Called in Start() because
-        /// this component is instantiated after the player ID assignment event.
+        /// Initialize the controller with position and facing.
+        /// Called by PlayerViewFactory after instantiation.
         /// </summary>
-        private void InitializeFromRegistry()
+        public void Initialize(Vector2Int position, int facing)
         {
-            if (playerRegistry?.LocalPlayer != null)
+            if (isInitialized)
             {
-                currentPosition = playerRegistry.LocalPlayer.Position;
-                currentFacing = playerRegistry.LocalPlayer.Facing;
-                Debug.Log($"LocalPlayerController: Initialized at {currentPosition}, facing {Direction.GetName(currentFacing)}");
+                Debug.LogWarning("LocalPlayerController: Already initialized!");
+                return;
             }
-            else
-            {
-                Debug.LogWarning("LocalPlayerController: PlayerRegistry.LocalPlayer is null during initialization!");
-            }
+
+            currentPosition = position;
+            currentFacing = facing;
+            isInitialized = true;
+            Debug.Log($"LocalPlayerController: Initialized at {currentPosition}, facing {Direction.GetName(currentFacing)}");
         }
 
         private void OnDisable()
@@ -106,6 +97,7 @@ namespace DyeWars.Player
             EventBus.Unsubscribe<DirectionInputEvent>(OnDirectionInput);
             EventBus.Unsubscribe<LocalPlayerPositionCorrectedEvent>(OnLocalPlayerPositionCorrected);
             EventBus.Unsubscribe<LocalPlayerFacingChangedEvent>(OnLocalPlayerFacingChanged);
+            StopAllCoroutines();
         }
 
         private void Update()
@@ -123,33 +115,35 @@ namespace DyeWars.Player
 
         private void OnDirectionInput(DirectionInputEvent evt)
         {
+            if (!isInitialized) return;
             HandleDirectionInput(evt.Direction, evt.TimeSinceRelease);
         }
 
         private void OnLocalPlayerPositionCorrected(LocalPlayerPositionCorrectedEvent evt)
         {
+            if (!isInitialized) return;
 
             // Server correction
-            {
-                int dx = Mathf.Abs(currentPosition.x - evt.Position.x);
-                int dy = Mathf.Abs(currentPosition.y - evt.Position.y);
+            int dx = Mathf.Abs(currentPosition.x - evt.Position.x);
+            int dy = Mathf.Abs(currentPosition.y - evt.Position.y);
 
-                if (dx > 1 || dy > 1)
-                {
-                    // Large correction - snap
-                    SnapToPosition(evt.Position);
-                }
-                else if (dx > 0 || dy > 0)
-                {
-                    // Small correction - lerp
-                    currentPosition = evt.Position;
-                    playerView?.MoveTo(evt.Position, moveDuration);
-                }
+            if (dx > 1 || dy > 1)
+            {
+                // Large correction - snap
+                SnapToPosition(evt.Position);
+            }
+            else if (dx > 0 || dy > 0)
+            {
+                // Small correction - lerp
+                currentPosition = evt.Position;
+                playerView?.MoveTo(evt.Position, moveDuration);
             }
         }
 
         private void OnLocalPlayerFacingChanged(LocalPlayerFacingChangedEvent evt)
         {
+            if (!isInitialized) return;
+
             if (currentFacing != evt.Facing)
             {
                 currentFacing = evt.Facing;
@@ -205,12 +199,12 @@ namespace DyeWars.Player
             }
 
             // If the desired tile contains a player
-            if (playerRegistry.IsPositionOccupied(predictedPos))
+            if (playerRegistry != null && playerRegistry.IsPositionOccupied(predictedPos))
             {
                 return;
             }
 
-            
+
             // Send to server
             networkService?.Sender.SendMove(direction, currentFacing);
 

@@ -3,16 +3,18 @@
 /// =======================================
 //
 #pragma once
+
 #include <memory>
 #include <vector>
 
 class ClientConnection;
+
 class GameServer;
 
 namespace PacketHandler {
     void Handle(
-            std::shared_ptr<ClientConnection> client,
+            const std::shared_ptr<ClientConnection> &client,
             const std::vector<uint8_t> &data,
             GameServer *server
-                );
+    );
 }

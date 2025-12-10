@@ -1,4 +1,5 @@
 #pragma once
+
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -9,22 +10,26 @@
 class ConnectionLimiter {
 public:
     // Check if IP can connect (under max concurrent)
-    bool CanConnect(const std::string& ip);
+    bool CanConnect(const std::string &ip);
 
     // Track connection opened/closed
-    void AddConnection(const std::string& ip);
-    void RemoveConnection(const std::string& ip);
+    void AddConnection(const std::string &ip);
+
+    void RemoveConnection(const std::string &ip);
 
     // Rate limiting (attempts per time window)
-    bool CheckRateLimit(const std::string& ip);
+    bool CheckRateLimit(const std::string &ip);
 
     // Ban management
-    void RecordFailure(const std::string& ip);
-    bool IsBanned(const std::string& ip);
-    void Unban(const std::string& ip);
+    void RecordFailure(const std::string &ip);
+
+    bool IsBanned(const std::string &ip);
+
+    void Unban(const std::string &ip);
 
     // Stats
-    int GetConnectionCount(const std::string& ip);
+    int GetConnectionCount(const std::string &ip);
+
     int GetBanCount();
 
 private:

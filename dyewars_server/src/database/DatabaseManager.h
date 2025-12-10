@@ -8,221 +8,138 @@
 // On Linux: sudo apt-get install libsqlite3-dev
 
 #pragma once
+
 #include <string>
 #include <optional>
+#include <vector>
 #include <sqlite3.h>
 #include <iostream>
+#include <queue>
+#include <mutex>
+#include <thread>
+#include <functional>
+#include <atomic>
 #include <memory>
 
 struct PlayerAccount {
-    uint32_t user_id;
+    uint64_t user_id;
     std::string username;
+    std::string password_hash;
     int level;
     int experience;
+    int gold;
+    int health;
+    int mana;
+    int x, y;
+    int map_id;
+    int last_x, last_y;
 };
+
+struct InventorySlot {
+    int slot;
+    int item_id;
+    int quantity;
+};
+
+struct MailMessage {
+    int id;
+    uint64_t sender_id;
+    std::string sender_name;
+    std::string subject;
+    std::string body;
+    int gold;
+    int item_id;
+    int item_quantity;
+    bool read;
+    int64_t sent_at;
+};
+
 
 class DatabaseManager {
 public:
-    DatabaseManager(const std::string& db_path = "game_server.db") {
+    DatabaseManager(const std::string &db_path = "data/gameDB.sqlite") {
         int rc = sqlite3_open(db_path.c_str(), &db_);
-
         if (rc != SQLITE_OK) {
             std::cerr << "Failed to open database: " << sqlite3_errmsg(db_) << std::endl;
             db_ = nullptr;
             return;
         }
 
+        // Enable WAL mode for better concurrency
+        Execute("PRAGMA journal_mode=WAL;");
+
         std::cout << "Database opened: " << db_path << std::endl;
         CreateTables();
+        StartWriteQueue();
     }
 
     ~DatabaseManager() {
-        if (db_) {
-            sqlite3_close(db_);
-        }
+        StopWriteQueue();
+        if (db_) sqlite3_close(db_);
     }
 
-    // Login/register - returns user_id
-    std::optional<PlayerAccount> LoginOrRegister(const std::string& username) {
-        if (!db_) return std::nullopt;
+    // ===== Player Account =====
+    std::optional<PlayerAccount> GetPlayer(const std::string &username);
 
-        // Try to find existing player
-        auto existing = GetPlayerByUsername(username);
-        if (existing) {
-            std::cout << "Player '" << username << "' logged in (ID: " << existing->user_id << ")" << std::endl;
-            return existing;
-        }
+    std::optional<PlayerAccount> GetPlayer(uint32_t user_id);
 
-        // Create new player
-        return CreateNewPlayer(username);
-    }
+    std::optional<PlayerAccount> CreatePlayer(const std::string &username, const std::string &password_hash);
 
-    // Get player by username
-    std::optional<PlayerAccount> GetPlayerByUsername(const std::string& username) {
-        if (!db_) return std::nullopt;
+    bool ValidatePassword(const std::string &username, const std::string &password_hash);
 
-        const char* sql = "SELECT user_id, username, level, experience FROM players WHERE username = ?;";
-        sqlite3_stmt* stmt;
+    // ===== Async Writes (queued) =====
+    void SavePlayerStats(uint32_t user_id, int level, int exp, int gold, int health, int mana);
 
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-            std::cerr << "Failed to prepare statement: " << sqlite3_errmsg(db_) << std::endl;
-            return std::nullopt;
-        }
+    void SavePlayerPosition(uint32_t user_id, int x, int y, int map_id);
 
-        // Bind username parameter
-        sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_TRANSIENT);
+    // ===== Inventory =====
+    std::vector<InventorySlot> GetInventory(uint32_t user_id);
 
-        std::optional<PlayerAccount> result;
+    void SetInventorySlot(uint32_t user_id, int slot, int item_id, int quantity);
 
-        if (sqlite3_step(stmt) == SQLITE_ROW) {
-            PlayerAccount account;
-            account.user_id = sqlite3_column_int(stmt, 0);
-            account.username = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-            account.level = sqlite3_column_int(stmt, 2);
-            account.experience = sqlite3_column_int(stmt, 3);
-            result = account;
-        }
+    void ClearInventorySlot(uint32_t user_id, int slot);
 
-        sqlite3_finalize(stmt);
-        return result;
-    }
+    // ===== Spells =====
+    std::vector<int> GetPlayerSpells(uint32_t user_id);
 
-    // Get player by user_id
-    std::optional<PlayerAccount> GetPlayerByID(uint32_t user_id) {
-        if (!db_) return std::nullopt;
+    void LearnSpell(uint32_t user_id, int spell_id);
 
-        const char* sql = "SELECT user_id, username, level, experience FROM players WHERE user_id = ?;";
-        sqlite3_stmt* stmt;
+    void ForgetSpell(uint32_t user_id, int spell_id);
 
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-            std::cerr << "Failed to prepare statement: " << sqlite3_errmsg(db_) << std::endl;
-            return std::nullopt;
-        }
+    // ===== Mail =====
+    std::vector<MailMessage> GetMail(uint32_t user_id, bool unread_only = false);
 
-        sqlite3_bind_int(stmt, 1, user_id);
+    void SendMail(uint32_t sender_id, uint32_t recipient_id, const std::string &subject,
+                  const std::string &body, int gold = 0, int item_id = 0, int item_qty = 0);
 
-        std::optional<PlayerAccount> result;
+    void MarkMailRead(int mail_id);
 
-        if (sqlite3_step(stmt) == SQLITE_ROW) {
-            PlayerAccount account;
-            account.user_id = sqlite3_column_int(stmt, 0);
-            account.username = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-            account.level = sqlite3_column_int(stmt, 2);
-            account.experience = sqlite3_column_int(stmt, 3);
-            result = account;
-        }
+    void DeleteMail(int mail_id);
 
-        sqlite3_finalize(stmt);
-        return result;
-    }
-
-    // Update player stats
-    bool UpdatePlayerStats(uint32_t user_id, int level, int experience) {
-        if (!db_) return false;
-
-        const char* sql = "UPDATE players SET level = ?, experience = ? WHERE user_id = ?;";
-        sqlite3_stmt* stmt;
-
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-            std::cerr << "Failed to prepare statement: " << sqlite3_errmsg(db_) << std::endl;
-            return false;
-        }
-
-        sqlite3_bind_int(stmt, 1, level);
-        sqlite3_bind_int(stmt, 2, experience);
-        sqlite3_bind_int(stmt, 3, user_id);
-
-        bool success = sqlite3_step(stmt) == SQLITE_DONE;
-        sqlite3_finalize(stmt);
-
-        if (success) {
-            std::cout << "Updated player " << user_id << " stats" << std::endl;
-        }
-
-        return success;
-    }
-
-    // Save player position
-    bool SavePlayerPosition(uint32_t user_id, int x, int y) {
-        if (!db_) return false;
-
-        const char* sql = "UPDATE players SET last_x = ?, last_y = ? WHERE user_id = ?;";
-        sqlite3_stmt* stmt;
-
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-            std::cerr << "Failed to prepare statement: " << sqlite3_errmsg(db_) << std::endl;
-            return false;
-        }
-
-        sqlite3_bind_int(stmt, 1, x);
-        sqlite3_bind_int(stmt, 2, y);
-        sqlite3_bind_int(stmt, 3, user_id);
-
-        bool success = sqlite3_step(stmt) == SQLITE_DONE;
-        sqlite3_finalize(stmt);
-
-        return success;
-    }
+    // ===== Leaderboard =====
+    std::vector<PlayerAccount> GetLeaderboard(int limit = 10);
 
 private:
-    void CreateTables() {
-        const char* sql = R"(
-            CREATE TABLE IF NOT EXISTS players (
-                user_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                level INTEGER DEFAULT 1,
-                experience INTEGER DEFAULT 0,
-                last_x INTEGER DEFAULT 0,
-                last_y INTEGER DEFAULT 0,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                last_login DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
+    void CreateTables();
 
-            CREATE INDEX IF NOT EXISTS idx_username ON players(username);
-        )";
+    bool Execute(const char *sql);
 
-        char* err_msg = nullptr;
-        if (sqlite3_exec(db_, sql, nullptr, nullptr, &err_msg) != SQLITE_OK) {
-            std::cerr << "SQL error: " << err_msg << std::endl;
-            sqlite3_free(err_msg);
-        } else {
-            std::cout << "Database tables ready" << std::endl;
-        }
-    }
+    void EnqueueWrite(std::function<void()> write_fn);
 
-    std::optional<PlayerAccount> CreateNewPlayer(const std::string& username) {
-        const char* sql = "INSERT INTO players (username) VALUES (?);";
-        sqlite3_stmt* stmt;
+    void StartWriteQueue();
 
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-            std::cerr << "Failed to prepare statement: " << sqlite3_errmsg(db_) << std::endl;
-            return std::nullopt;
-        }
+    void StopWriteQueue();
 
-        sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_TRANSIENT);
+    void ProcessWriteQueue();
 
-        if (sqlite3_step(stmt) != SQLITE_DONE) {
-            std::cerr << "Failed to create player: " << sqlite3_errmsg(db_) << std::endl;
-            sqlite3_finalize(stmt);
-            return std::nullopt;
-        }
+    sqlite3 *db_ = nullptr;
 
-        uint32_t new_user_id = sqlite3_last_insert_rowid(db_);
-        sqlite3_finalize(stmt);
-
-        std::cout << "New player '" << username << "' created (ID: " << new_user_id << ")" << std::endl;
-
-        // Return the newly created player
-        PlayerAccount account;
-        account.user_id = new_user_id;
-        account.username = username;
-        account.level = 1;
-        account.experience = 0;
-
-        return account;
-    }
-
-    sqlite3* db_;
+    // Write queue
+    std::queue<std::function<void()>> write_queue_;
+    std::mutex queue_mutex_;
+    std::thread write_thread_;
+    std::atomic<bool> stop_queue_{false};
+    std::condition_variable queue_cv_;
 };
 
 // Example usage in your server:

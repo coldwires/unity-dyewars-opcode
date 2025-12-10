@@ -1,4 +1,15 @@
 // NetworkManager.cs
+//
+// DEPRECATED: This is legacy code with an incompatible protocol.
+// Use the modern network stack instead:
+//   - NetworkService.cs (main orchestrator)
+//   - PacketHandler.cs (incoming packets)
+//   - PacketSender.cs (outgoing packets)
+//   - PacketOpcodes.cs (protocol constants - single source of truth)
+//
+// This file uses old opcodes (0x10-0x20) that don't match server OpCodes.h.
+// Do not add new features here. This file will be removed in a future update.
+//
 using System;
 using System.Collections.Generic;
 using System.Net.Sockets;

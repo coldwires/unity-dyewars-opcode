@@ -1,4 +1,5 @@
 #pragma once
+
 #include <memory>
 #include <unordered_map>
 #include <mutex>
@@ -8,30 +9,33 @@ class ClientConnection;
 
 class ClientManager {
 public:
-	/// <summary>
-	/// adds client to client list
-	/// </summary>
-	void AddClient(const std::shared_ptr<ClientConnection> &client);
-	
-	/// <summary>
-	/// Removes client
-	/// </summary>
-	void RemoveClient(uint64_t client_id);
+    /// <summary>
+    /// adds client to client list
+    /// </summary>
+    void AddClient(const std::shared_ptr<ClientConnection> &client);
 
-	/// <summary>
-	/// Close all client sockets
-	/// </summary>
-	void CloseAll();
+    /// <summary>
+    /// Removes client
+    /// </summary>
+    void RemoveClient(uint64_t client_id);
 
-	std::shared_ptr<ClientConnection> GetClientCopy(uint64_t client_id);
-	ClientConnection* GetClientPtr(uint64_t id);
+    /// <summary>
+    /// Close all client sockets
+    /// </summary>
+    void CloseAll();
 
-	void BroadcastToOthers(uint64_t exclude_id, const std::function<void(const std::shared_ptr<ClientConnection>&)>& action);
-	void BroadcastToAll(const std::function<void(const std::shared_ptr<ClientConnection>&)> &action);
+    std::shared_ptr<ClientConnection> GetClientCopy(uint64_t client_id);
 
-	size_t Count();
+    ClientConnection *GetClientPtr(uint64_t id);
+
+    void BroadcastToOthers(uint64_t exclude_id,
+                           const std::function<void(const std::shared_ptr<ClientConnection> &)> &action);
+
+    void BroadcastToAll(const std::function<void(const std::shared_ptr<ClientConnection> &)> &action);
+
+    size_t Count();
 
 private:
-	std::unordered_map<uint64_t, std::shared_ptr<ClientConnection>> clients_;
-	std::mutex mutex_;
+    std::unordered_map<uint64_t, std::shared_ptr<ClientConnection>> clients_;
+    std::mutex mutex_;
 };

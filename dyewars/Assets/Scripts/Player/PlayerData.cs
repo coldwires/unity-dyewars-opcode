@@ -18,7 +18,7 @@ namespace DyeWars.Player
     public class PlayerData
     {
         // Identity (immutable after construction)
-        public uint PlayerId { get; }
+        public ulong PlayerId { get; }
         public bool IsLocalPlayer { get; }
 
         // Position and movement (mutable)
@@ -30,7 +30,7 @@ namespace DyeWars.Player
         public bool IsMoving { get; set; }
         public bool IsDirty { get; set; }  // True if state changed, needs visual update
 
-        public PlayerData(uint playerId, bool isLocalPlayer = false)
+        public PlayerData(ulong playerId, bool isLocalPlayer = false)
         {
             PlayerId = playerId;
             IsLocalPlayer = isLocalPlayer;

@@ -1,4 +1,4 @@
-﻿// NetworkConnection.cs
+// NetworkConnection.cs
 // Handles raw TCP connection: connect, disconnect, send bytes, receive bytes.
 // This class doesn't know what the bytes mean—that's PacketHandler's job.
 //
@@ -9,6 +9,7 @@ using System.Net.Sockets;
 using System.Threading;
 using UnityEngine;
 using DyeWars.Network.Protocol;
+using DyeWars.Network.Debugging;
 
 namespace DyeWars.Network.Connection
 {
@@ -17,7 +18,6 @@ namespace DyeWars.Network.Connection
         // Connection state
         private TcpClient client;
         private NetworkStream stream;
-        private Thread receiveThread;
         private volatile bool isConnected = false;
         private volatile byte[] lastSentPacket = null;
 
@@ -30,12 +30,22 @@ namespace DyeWars.Network.Connection
         public bool IsConnected => isConnected;
         public byte[] LastSentPacket => lastSentPacket;
 
+        //Connection timeout in milliseconds
+        private const int ConnectionTimeout = 5000;
+
+        //Connection thread for async connect
+        private Thread connectionThread;
+        private volatile bool isConnecting = false;
+
+        public bool IsConnecting => isConnecting;
+
         // ========================================================================
         // CONNECTION MANAGEMENT
         // ========================================================================
 
         /// <summary>
-        /// Connect to a server. Blocks until connection succeeds or fails.
+        /// Connect to a server asynchronously. Returns immediately; connection
+        /// result will be reported via OnConnected or OnDisconnected events. 
         /// </summary>
         public void Connect(string host, int port)
         {
@@ -45,28 +55,63 @@ namespace DyeWars.Network.Connection
                 return;
             }
 
+            if (isConnecting)
+            {
+                Debug.LogWarning("NetworkConnection: Already connecting");
+                return;
+            }
+
+            isConnecting = true;
+
+            // Run connection in a separate thread to avoid blocking main thread
+            connectionThread = new Thread(() => ConnectThreaded(host, port))
+            {
+                IsBackground = true,
+                Name = "NetworkConnectThread"
+            };
+            connectionThread.Start();
+        }
+
+        private void ConnectThreaded(string host, int port)
+        {
             try
             {
                 Debug.Log($"NetworkConnection: Connecting to {host}:{port}...");
 
                 client = new TcpClient();
-                client.Connect(host, port);
+
+                // Use async connect with timeout
+                var connectResult = client.BeginConnect(host, port, null, null);
+                bool success = connectResult.AsyncWaitHandle.WaitOne(ConnectionTimeout);
+
+                if (!success)
+                // Timeout - clean up and report failure
+                {
+                    client.Close();
+                    client = null;
+                    isConnecting = false;
+                    Debug.LogError("NetworkConnection: Connection timed out");
+                    OnDisconnected?.Invoke("Connection timed out");
+                    return;
+                }
+
+                // Complete the connection
+                client.EndConnect(connectResult);
                 stream = client.GetStream();
                 isConnected = true;
-
-                // Start receive thread
-                receiveThread = new Thread(ReceiveLoop)
-                {
-                    IsBackground = true,
-                    Name = "NetworkReceiveThread"
-                };
-                receiveThread.Start();
+                isConnecting = false;
 
                 Debug.Log("NetworkConnection: Connected!");
                 OnConnected?.Invoke();
+
+                // Continue on this thread as the recieve loop
+                ReceiveLoop();
             }
             catch (Exception e)
             {
+                isConnecting = false;
+                client?.Close();
+                client = null;
                 Debug.LogError($"NetworkConnection: Connection failed - {e.Message}");
                 OnDisconnected?.Invoke(e.Message);
             }
@@ -77,10 +122,13 @@ namespace DyeWars.Network.Connection
         /// </summary>
         public void Disconnect()
         {
-            if (!isConnected) return;
+            if (!isConnected && !isConnecting) return;
 
             isConnected = false;
+            isConnecting = false;
 
+            // Close socket - this will cause blocking Connect/Read to throw,
+            // which makes the thread exit
             stream?.Close();
             stream = null;
 
@@ -88,9 +136,10 @@ namespace DyeWars.Network.Connection
             client = null;
 
             // Wait for receive thread to finish
-            if (receiveThread != null && receiveThread.IsAlive)
+            // (connectThread becomes the receive thread after successful connection)
+            if (connectionThread != null && connectionThread.IsAlive)
             {
-                receiveThread.Join(1000);
+                connectionThread.Join(1000);
             }
 
             Debug.Log("NetworkConnection: Disconnected");
@@ -115,6 +164,15 @@ namespace DyeWars.Network.Connection
             try
             {
                 lastSentPacket = data;
+
+                // Track sent packet for debugging (skip header, track payload)
+                if (data.Length > PacketHeader.HeaderSize)
+                {
+                    byte[] payload = new byte[data.Length - PacketHeader.HeaderSize];
+                    Array.Copy(data, PacketHeader.HeaderSize, payload, 0, payload.Length);
+                    PacketDebugger.TrackSent(payload);
+                }
+
                 stream.Write(data, 0, data.Length);
                 stream.Flush();
             }
@@ -137,9 +195,8 @@ namespace DyeWars.Network.Connection
             {
                 try
                 {
-                    // Read packet header
-                    int bytesRead = stream.Read(headerBuffer, 0, PacketHeader.HeaderSize);
-                    if (bytesRead != PacketHeader.HeaderSize)
+                    // Read packet header (must read all bytes - TCP may fragment)
+                    if (!ReadExact(headerBuffer, 0, PacketHeader.HeaderSize))
                     {
                         Debug.LogError("NetworkConnection: Failed to read header");
                         break;
@@ -155,17 +212,23 @@ namespace DyeWars.Network.Connection
                     // Read payload size
                     ushort payloadSize = PacketHeader.ReadPayloadSize(headerBuffer);
 
-                    if (payloadSize > 0 && payloadSize < 4096)
+                    if (payloadSize > 0 && payloadSize <= PacketHeader.MaxIncomingPayload)
                     {
-                        // Read payload
+                        // Read payload (must read all bytes - TCP may fragment)
                         byte[] payload = new byte[payloadSize];
-                        bytesRead = stream.Read(payload, 0, payloadSize);
-
-                        if (bytesRead == payloadSize)
+                        if (!ReadExact(payload, 0, payloadSize))
                         {
-                            // Notify listeners (still on background thread!)
-                            OnPacketReceived?.Invoke(payload);
+                            Debug.LogError("NetworkConnection: Failed to read payload");
+                            break;
                         }
+
+                        // Notify listeners (still on background thread!)
+                        OnPacketReceived?.Invoke(payload);
+                    }
+                    else if (payloadSize > PacketHeader.MaxIncomingPayload)
+                    {
+                        Debug.LogError($"NetworkConnection: Payload too large ({payloadSize} bytes, max {PacketHeader.MaxIncomingPayload})");
+                        break;
                     }
                 }
                 catch (Exception e)
@@ -180,6 +243,26 @@ namespace DyeWars.Network.Connection
 
             isConnected = false;
             OnDisconnected?.Invoke("Connection lost");
+        }
+
+        /// <summary>
+        /// Read exactly 'count' bytes from the stream. TCP may fragment data,
+        /// so a single Read() call might not return all requested bytes.
+        /// </summary>
+        private bool ReadExact(byte[] buffer, int offset, int count)
+        {
+            int totalRead = 0;
+            while (totalRead < count)
+            {
+                int bytesRead = stream.Read(buffer, offset + totalRead, count - totalRead);
+                if (bytesRead == 0)
+                {
+                    // Connection closed
+                    return false;
+                }
+                totalRead += bytesRead;
+            }
+            return true;
         }
     }
 }

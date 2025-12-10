@@ -39,9 +39,14 @@ namespace DyeWars.Network.Protocol
         public const int HeaderSize = 4;
 
         /// <summary>
-        /// Maximum allowed payload size (64KB).
+        /// Maximum payload size for incoming packets (Server → Client).
         /// </summary>
-        public const int MaxPayloadSize = 65535;
+        public const int MaxIncomingPayload = 4096;
+
+        /// <summary>
+        /// Maximum payload size for outgoing packets (Client → Server).
+        /// </summary>
+        public const int MaxOutgoingPayload = 4096;
 
         /// <summary>
         /// Validate that a buffer contains valid magic bytes.

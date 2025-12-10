@@ -1,41 +1,58 @@
 ﻿// PacketOpcodes.cs
 // Centralized definition of all network packet opcodes.
-// This is the single source of truth for packet types used by client and server.
+// MUST match server OpCodes.h - that is the single source of truth.
 //
 // Usage:
-//   Opcode.LocalPlayer.S_Died
-//   Opcode.RemotePlayer.S_Entered_Range
-//   Opcode.Batch.S_RemotePlayer_Update
-//   Opcode.Map.S_Tile_Data
+//   Opcode.Connection.S_Handshake_Accepted
+//   Opcode.Connection.C_Handshake_Request
+//   Opcode.Movement.C_Move_Request
+//   Opcode.LocalPlayer.S_Welcome
+//   Opcode.Batch.S_Player_Spatial
 //
 // Naming Convention:
 //   C_ = Client -> Server
 //   S_ = Server -> Client
 //
 // Opcode Ranges:
-//   0x00 - 0x0F : Client -> Server : Connection & Movement
-//   0x10 - 0x1F : Server -> Client : Local Player & Map
-//   0x20 - 0x2F : Server -> Client : Remote Players & Entities
+//   0x00        : Client -> Server : Handshake
+//   0x01 - 0x04 : Client -> Server : Movement & Actions
+//   0x10 - 0x12 : Server -> Client : Local Player
+//   0x1A - 0x1E : Server -> Client : Map Data
+//   0x20 - 0x26 : Server -> Client : Remote Players
+//   0x25        : Server -> Client : Batch Player Spatial (in Batch namespace)
+//   0x28 - 0x2F : Server -> Client : Entities
 //   0x30 - 0x3F : Server -> Client : Combat & Effects
 //   0x40 - 0x4F : Client -> Server : Combat Actions
 //   0x50 - 0x5F : Bidirectional    : Chat & Social
 //   0x60 - 0x6F : Client -> Server : Inventory & Items
 //   0x70 - 0x7F : Server -> Client : Inventory Updates
-//   0x80 - 0x8F : Client -> Server : Trade & Economy
-//   0x90 - 0x9F : Server -> Client : Trade Updates
-//   0xA0 - 0xAF : Client -> Server : Skills & Abilities
-//   0xB0 - 0xBF : Server -> Client : Skill Updates
-//   0xC0 - 0xCF : Reserved
-//   0xD0 - 0xDF : Reserved
 //   0xE0 - 0xEF : Admin / Debug
 //   0xF0 - 0xFF : System (handshake response, ping, disconnect)
 
 namespace DyeWars.Network.Protocol
 {
+    // ========================================================================
+    // PROTOCOL LIMITS - Easy to adjust
+    // ========================================================================
+    public static class ProtocolLimits
+    {
+        /// <summary>Maximum players in a batch update packet.</summary>
+        public const int MaxPlayersPerBatch = 255;
+
+        /// <summary>Maximum entities in a batch update packet.</summary>
+        public const int MaxEntitiesPerBatch = 255;
+
+        /// <summary>Maximum string length in packets (UTF8 bytes).</summary>
+        public const int MaxStringLength = 255;
+
+        /// <summary>Maximum incoming packet payload size.</summary>
+        public const int MaxIncomingPayload = 4096;
+    }
+
     public static class Opcode
     {
         // ====================================================================
-        // CONNECTION & HANDSHAKE
+        // CONNECTION & HANDSHAKE - 0xF0-0xFF, 0x00
         // ====================================================================
         public static class Connection
         {
@@ -58,28 +75,10 @@ namespace DyeWars.Network.Protocol
             public const byte S_Handshake_Rejected = 0xF1;
 
             /// <summary>
-            /// Client requests graceful disconnect.
-            /// Payload: (none)
+            /// Server cleanly disconnects client due to shutdown.
+            /// Payload: [reason:1]
             /// </summary>
-            public const byte C_Disconnect_Request = 0xFE;
-
-            /// <summary>
-            /// Server acknowledges disconnect.
-            /// Payload: (none)
-            /// </summary>
-            public const byte S_Disconnect_Acknowledged = 0xFF;
-
-            /// <summary>
-            /// Client ping request.
-            /// Payload: [timestamp:4]
-            /// </summary>
-            public const byte C_Ping_Request = 0xF6;
-
-            /// <summary>
-            /// Server pong response.
-            /// Payload: [timestamp:4]
-            /// </summary>
-            public const byte S_Pong_Response = 0xF7;
+            public const byte S_ServerShutdown = 0xF2;
 
             /// <summary>
             /// Server ping request.
@@ -104,6 +103,18 @@ namespace DyeWars.Network.Protocol
             /// Payload: (none)
             /// </summary>
             public const byte S_Heartbeat_Response = 0xFB;
+
+            /// <summary>
+            /// Client requests graceful disconnect.
+            /// Payload: (none)
+            /// </summary>
+            public const byte C_Disconnect_Request = 0xFE;
+
+            /// <summary>
+            /// Server acknowledges disconnect.
+            /// Payload: (none)
+            /// </summary>
+            public const byte S_Disconnect_Acknowledged = 0xFF;
         }
 
         // ====================================================================
@@ -143,7 +154,7 @@ namespace DyeWars.Network.Protocol
         {
             /// <summary>
             /// Welcome packet with player ID and initial state.
-            /// Payload: [playerId:4][x:2][y:2][facing:1]
+            /// Payload: [playerId:8][x:2][y:2][facing:1]
             /// </summary>
             public const byte S_Welcome = 0x10;
 
@@ -240,49 +251,43 @@ namespace DyeWars.Network.Protocol
         }
 
         // ====================================================================
-        // REMOTE PLAYERS (Server -> Client)
+        // REMOTE PLAYERS (Server -> Client) - 0x20-0x26
         // ====================================================================
         public static class RemotePlayer
         {
             /// <summary>
             /// Player entered visible range.
-            /// Payload: [playerId:4][x:2][y:2][facing:1][appearanceData:variable]
+            /// Payload: [playerId:8][x:2][y:2][facing:1][appearanceData:variable]
             /// </summary>
             public const byte S_Entered_Range = 0x20;
 
             /// <summary>
             /// Player left visible range.
-            /// Payload: [playerId:4]
+            /// Payload: [playerId:8]
             /// </summary>
             public const byte S_Left_Range = 0x21;
 
             /// <summary>
             /// Player appearance changed.
-            /// Payload: [playerId:4][appearanceData:variable]
+            /// Payload: [playerId:8][appearanceData:variable]
             /// </summary>
             public const byte S_Appearance_Changed = 0x22;
 
             /// <summary>
             /// Player died.
-            /// Payload: [playerId:4]
+            /// Payload: [playerId:8]
             /// </summary>
             public const byte S_Died = 0x23;
 
             /// <summary>
             /// Player respawned.
-            /// Payload: [playerId:4][x:2][y:2]
+            /// Payload: [playerId:8][x:2][y:2]
             /// </summary>
             public const byte S_Respawned = 0x24;
 
             /// <summary>
-            /// Player joined the game.
-            /// Payload: [playerId:4][x:2][y:2][facing:1][nameLength:1][name:variable]
-            /// </summary>
-            public const byte S_Joined_Game = 0x25;
-
-            /// <summary>
             /// Player left the game.
-            /// Payload: [playerId:4]
+            /// Payload: [playerId:8]
             /// </summary>
             public const byte S_Left_Game = 0x26;
         }
@@ -336,15 +341,16 @@ namespace DyeWars.Network.Protocol
         }
 
         // ====================================================================
-        // BATCH UPDATES (Server -> Client)
+        // BATCH UPDATES (Server -> Client) - 0x25
         // ====================================================================
         public static class Batch
         {
             /// <summary>
-            /// Batch remote player positions.
-            /// Payload: [count:1][[playerId:4][x:2][y:2][facing:1]]...
+            /// Batch player spatial update (position + facing).
+            /// Creates player on client if doesn't exist, otherwise updates.
+            /// Payload: [count:1][[playerId:8][x:2][y:2][facing:1]]... (13 bytes per player)
             /// </summary>
-            public const byte S_RemotePlayer_Update = 0x27;
+            public const byte S_Player_Spatial = 0x25;
 
             /// <summary>
             /// Batch entity positions.
@@ -577,15 +583,10 @@ namespace DyeWars.Network.Protocol
 
         // ====================================================================
         // SYSTEM NOTIFICATIONS
+        // Note: S_ServerShutdown (0xF2) is in Connection namespace
         // ====================================================================
         public static class System
         {
-            /// <summary>
-            /// Kick notification.
-            /// Payload: [reasonLength:1][reason:variable]
-            /// </summary>
-            public const byte S_Kick_Notification = 0xF2;
-
             /// <summary>
             /// Server shutdown warning.
             /// Payload: [secondsRemaining:2][reasonLength:1][reason:variable]
@@ -608,8 +609,7 @@ namespace DyeWars.Network.Protocol
         // Connection
         public const int C_Connection_Handshake_Request = 7;        // opcode + version(2) + magic(4)
         public const int S_Connection_Handshake_Accepted = 7;       // opcode + version(2) + magic(4)
-        public const int C_Connection_Ping_Request = 5;             // opcode + timestamp(4)
-        public const int S_Connection_Pong_Response = 5;            // opcode + timestamp(4)
+        public const int S_Connection_ServerShutdown = 2;           // opcode + reason(1)
         public const int S_Connection_Ping_Request = 5;             // opcode + timestamp(4)
         public const int C_Connection_Pong_Response = 5;            // opcode + timestamp(4)
         public const int C_Connection_Heartbeat_Request = 1;        // opcode only
@@ -624,7 +624,7 @@ namespace DyeWars.Network.Protocol
         public const int C_Movement_Interact_Request = 1;           // opcode only
 
         // LocalPlayer
-        public const int S_LocalPlayer_Welcome = 10;                // opcode + id(4) + x(2) + y(2) + facing
+        public const int S_LocalPlayer_Welcome = 14;                // opcode + id(8) + x(2) + y(2) + facing
         public const int S_LocalPlayer_Position_Correction = 6;     // opcode + x(2) + y(2) + facing
         public const int S_LocalPlayer_Facing_Correction = 2;       // opcode + facing
         public const int S_LocalPlayer_Stats_Update = 9;            // opcode + hp(2) + maxHp(2) + mp(2) + maxMp(2)
@@ -643,10 +643,10 @@ namespace DyeWars.Network.Protocol
         public const int S_Map_Collision_Data_Header = 7;           // opcode + originX(2) + originY(2) + width + height
 
         // RemotePlayer
-        public const int S_RemotePlayer_Left_Range = 5;             // opcode + id(4)
-        public const int S_RemotePlayer_Died = 5;                   // opcode + id(4)
-        public const int S_RemotePlayer_Respawned = 9;              // opcode + id(4) + x(2) + y(2)
-        public const int S_RemotePlayer_Left_Game = 5;              // opcode + id(4)
+        public const int S_RemotePlayer_Left_Range = 9;             // opcode + id(8)
+        public const int S_RemotePlayer_Died = 9;                   // opcode + id(8)
+        public const int S_RemotePlayer_Respawned = 13;             // opcode + id(8) + x(2) + y(2)
+        public const int S_RemotePlayer_Left_Game = 9;              // opcode + id(8)
 
         // Entity
         public const int S_Entity_Entered_Range = 13;               // opcode + id(4) + type + x(2) + y(2) + facing + appearanceId(2)
@@ -658,8 +658,8 @@ namespace DyeWars.Network.Protocol
         public const int S_Entity_Respawned = 9;                    // opcode + id(4) + x(2) + y(2)
 
         // Batch
-        public const int S_Batch_RemotePlayer_Update_Header = 2;    // opcode + count
-        public const int S_Batch_RemotePlayer_Update_PerPlayer = 9; // id(4) + x(2) + y(2) + facing
+        public const int S_Batch_Player_Spatial_Header = 2;         // opcode + count
+        public const int S_Batch_Player_Spatial_PerPlayer = 13;     // id(8) + x(2) + y(2) + facing
         public const int S_Batch_Entity_Update_Header = 2;          // opcode + count
         public const int S_Batch_Entity_Update_PerEntity = 9;       // id(4) + x(2) + y(2) + facing
 
@@ -693,7 +693,6 @@ namespace DyeWars.Network.Protocol
         public const int S_Inventory_GroundItem_Removed = 5;        // opcode + groundId(4)
 
         // System
-        public const int S_System_Kick_Notification_Header = 2;     // opcode + reasonLen
         public const int S_System_Shutdown_Warning_Header = 4;      // opcode + seconds(2) + reasonLen
         public const int S_System_Time_Sync = 5;                    // opcode + serverTime(4)
     }
@@ -709,14 +708,13 @@ namespace DyeWars.Network.Protocol
             Opcode.Connection.C_Handshake_Request => "Connection.C_Handshake_Request",
             Opcode.Connection.S_Handshake_Accepted => "Connection.S_Handshake_Accepted",
             Opcode.Connection.S_Handshake_Rejected => "Connection.S_Handshake_Rejected",
-            Opcode.Connection.C_Disconnect_Request => "Connection.C_Disconnect_Request",
-            Opcode.Connection.S_Disconnect_Acknowledged => "Connection.S_Disconnect_Acknowledged",
-            Opcode.Connection.C_Ping_Request => "Connection.C_Ping_Request",
-            Opcode.Connection.S_Pong_Response => "Connection.S_Pong_Response",
+            Opcode.Connection.S_ServerShutdown => "Connection.S_ServerShutdown",
             Opcode.Connection.S_Ping_Request => "Connection.S_Ping_Request",
             Opcode.Connection.C_Pong_Response => "Connection.C_Pong_Response",
             Opcode.Connection.C_Heartbeat_Request => "Connection.C_Heartbeat_Request",
             Opcode.Connection.S_Heartbeat_Response => "Connection.S_Heartbeat_Response",
+            Opcode.Connection.C_Disconnect_Request => "Connection.C_Disconnect_Request",
+            Opcode.Connection.S_Disconnect_Acknowledged => "Connection.S_Disconnect_Acknowledged",
 
             // Movement
             Opcode.Movement.C_Move_Request => "Movement.C_Move_Request",
@@ -749,7 +747,6 @@ namespace DyeWars.Network.Protocol
             Opcode.RemotePlayer.S_Appearance_Changed => "RemotePlayer.S_Appearance_Changed",
             Opcode.RemotePlayer.S_Died => "RemotePlayer.S_Died",
             Opcode.RemotePlayer.S_Respawned => "RemotePlayer.S_Respawned",
-            Opcode.RemotePlayer.S_Joined_Game => "RemotePlayer.S_Joined_Game",
             Opcode.RemotePlayer.S_Left_Game => "RemotePlayer.S_Left_Game",
 
             // Entity
@@ -762,7 +759,7 @@ namespace DyeWars.Network.Protocol
             Opcode.Entity.S_Respawned => "Entity.S_Respawned",
 
             // Batch
-            Opcode.Batch.S_RemotePlayer_Update => "Batch.S_RemotePlayer_Update",
+            Opcode.Batch.S_Player_Spatial => "Batch.S_Player_Spatial",
             Opcode.Batch.S_Entity_Update => "Batch.S_Entity_Update",
 
             // Combat
@@ -805,7 +802,6 @@ namespace DyeWars.Network.Protocol
             Opcode.Debug.S_State_Response => "Debug.S_State_Response",
 
             // System
-            Opcode.System.S_Kick_Notification => "System.S_Kick_Notification",
             Opcode.System.S_Shutdown_Warning => "System.S_Shutdown_Warning",
             Opcode.System.S_Time_Sync => "System.S_Time_Sync",
 
@@ -819,7 +815,6 @@ namespace DyeWars.Network.Protocol
             (opcode >= 0x60 && opcode <= 0x6F) ||
             (opcode >= 0x80 && opcode <= 0x8F) ||
             (opcode >= 0xA0 && opcode <= 0xAF) ||
-            opcode == Opcode.Connection.C_Ping_Request ||
             opcode == Opcode.Connection.C_Pong_Response ||
             opcode == Opcode.Connection.C_Heartbeat_Request ||
             opcode == Opcode.Connection.C_Disconnect_Request ||
@@ -833,8 +828,9 @@ namespace DyeWars.Network.Protocol
             >= 0x01 and <= 0x0F => "Movement",
             >= 0x10 and <= 0x19 => "LocalPlayer",
             >= 0x1A and <= 0x1F => "Map",
-            >= 0x20 and <= 0x26 => "RemotePlayer",
-            0x27 => "Batch",
+            >= 0x20 and <= 0x24 => "RemotePlayer",
+            0x25 => "Batch",
+            0x26 => "RemotePlayer",
             >= 0x28 and <= 0x2E => "Entity",
             0x2F => "Batch",
             >= 0x30 and <= 0x3F => "Combat",

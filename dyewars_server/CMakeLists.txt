@@ -1,3 +1,7 @@
+if (WIN32)
+    add_definitions(-D_WIN32_WINNT=0x0A00)  # Windows 10
+endif ()
+
 cmake_minimum_required(VERSION 3.31)
 project(DyeWarsServer)
 
@@ -34,20 +38,18 @@ file(GLOB_RECURSE HEADERS
 
 add_executable(DyeWarsServer ${SOURCES} ${HEADERS}
         src/core/Log.h
-        src/network/packets/Sender.h "src/server/ClientManager.h" "src/server/ClientManager.cpp" "src/network/ConnectionLimiter.h" "src/network/ConnectionLimiter.cpp"
-        src/game/PlayerRegistry.cpp
+        "src/server/ClientManager.h" "src/server/ClientManager.cpp" "src/network/ConnectionLimiter.h" "src/network/ConnectionLimiter.cpp"
         src/game/PlayerRegistry.h
-        src/game/World.cpp
         src/game/World.h
         src/network/packets/incoming/PacketHandler.cpp
         src/network/packets/incoming/PacketHandler.h
         src/network/packets/outgoing/PacketSender.h
-        src/game/Actions.h
-        src/game/Tilemap.cpp
+        src/game/actions/Actions.h
         src/game/TileMap.h
-        src/game/handlers/MoveHandler.cpp
-        src/game/handlers/MoveHandler.h
-        src/game/Actions.cpp
+        src/game/actions/Actions.cpp
+        src/game/actions/MoveActions.cpp
+        src/database/DatabaseManager.cpp
+        src/game/SpatialHash.h
 )
 
 # Link libraries

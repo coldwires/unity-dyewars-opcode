@@ -14,7 +14,6 @@ using UnityEngine;
 using DyeWars.Network.Protocol;
 using DyeWars.Network.Connection;
 
-
 namespace DyeWars.Network.Outbound
 {
     public class PacketSender
@@ -31,7 +30,7 @@ namespace DyeWars.Network.Outbound
         /// </summary>
         public void SendHandshake()
         {
-            var packet = PacketWriter.CreatePacket( Protocol.Opcode.Connection.C_Handshake_Request, writer =>
+            var packet = PacketWriter.CreatePacket(Protocol.Opcode.Connection.C_Handshake_Request, writer =>
             {
                 writer.WriteU16(PacketHeader.ProtocolVersion);
                 writer.WriteU32(PacketHeader.ClientMagic);
@@ -40,7 +39,7 @@ namespace DyeWars.Network.Outbound
             connection.SendRaw(packet);
             Debug.Log("PacketSender: Handshake sent");
         }
-        
+
         // ========================================================================
         // MOVEMENT PACKETS (0x01 - 0x0F)
         // ========================================================================
@@ -148,12 +147,11 @@ namespace DyeWars.Network.Outbound
         // ========================================================================
 
         /// <summary>
-        /// Send a ping request to measure latency.
+        /// Send pong response echoing back server's timestamp.
         /// </summary>
-        public void SendPing()
+        public void SendPongResponse(uint timestamp)
         {
-            uint timestamp = (uint)(Time.realtimeSinceStartup * 1000);
-            var packet = PacketWriter.CreatePacket(Opcode.Connection.C_Ping_Request, writer =>
+            var packet = PacketWriter.CreatePacket(Opcode.Connection.C_Pong_Response, writer =>
             {
                 writer.WriteU32(timestamp);
             });

@@ -1,4 +1,5 @@
 #pragma once
+
 #include <sol/sol.hpp>
 #include <mutex>
 #include <thread>
@@ -10,18 +11,24 @@
 class LuaGameEngine {
 public:
     LuaGameEngine();
+
     ~LuaGameEngine();
 
-    void OnPlayerMoved(uint32_t player_id, int x, int y, uint8_t facing);
+    void OnPlayerMoved(uint64_t player_id, int x, int y, uint8_t facing);
 
-    bool ProcessMove(int& x, int& y, uint8_t direction);
-    std::vector<uint8_t> ProcessCustomMessage(const std::vector<uint8_t>& data);
+    bool ProcessMove(int &x, int &y, uint8_t direction);
+
+    std::vector<uint8_t> ProcessCustomMessage(const std::vector<uint8_t> &data);
+
     void ReloadScripts();
 
 private:
     void SetupLuaEnvironment();
+
     void CreateDefaultScript();
-    void LoadScript(const std::string& path);
+
+    void LoadScript(const std::string &path);
+
     void StartFileWatcher();
 
     sol::state lua_;

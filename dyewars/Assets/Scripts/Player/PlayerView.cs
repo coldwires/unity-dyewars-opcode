@@ -9,7 +9,7 @@
 //   - Facing direction visuals
 //
 // This is attached to both local and remote player GameObjects.
-// For remote players, it listens to events to update visuals.
+// For remote players, PlayerViewFactory calls UpdateFromServer directly.
 // For local players, LocalPlayerController calls methods directly.
 
 using UnityEngine;
@@ -26,7 +26,7 @@ namespace DyeWars.Player
         [SerializeField] private SpriteRenderer weaponRenderer;
 
         [Header("Sprite Sheets (sliced)")]
-        [SerializeField] private Sprite[] bodySprites;   // 12 sprites: 4 directions × 3 frames
+        [SerializeField] private Sprite[] bodySprites;
         [SerializeField] private Sprite[] headSprites;
         [SerializeField] private Sprite[] weaponSprites;
 
@@ -34,7 +34,7 @@ namespace DyeWars.Player
         private readonly int[] walkFrameSequence = { 0, 1, 0, 2 };
         private int currentFrameIndex = 0;
         private float animationTimer = 0f;
-        private float frameTime = 0.0875f;  // Calculated from move duration
+        private float frameTime = 0.0875f;
 
         // Movement state
         private bool isMoving = false;
@@ -50,48 +50,27 @@ namespace DyeWars.Player
         private GridService gridService;
 
         // Remote player tracking
-        private uint? trackedPlayerId = null;
+        private ulong? trackedPlayerId = null;
         private bool isLocalPlayer = false;
 
         // ====================================================================
         // INITIALIZATION
         // ====================================================================
 
-        /// <summary>
-        /// Initialize as local player view.
-        /// </summary>
         public void InitializeAsLocalPlayer()
         {
             isLocalPlayer = true;
             trackedPlayerId = null;
             gridService = ServiceLocator.Get<GridService>();
-
             UpdateSprites(currentFacing, 0);
         }
 
-        /// <summary>
-        /// Initialize as remote player view.
-        /// </summary>
-        public void InitializeAsRemotePlayer(uint playerId)
+        public void InitializeAsRemotePlayer(ulong playerId)
         {
             isLocalPlayer = false;
             trackedPlayerId = playerId;
             gridService = ServiceLocator.Get<GridService>();
-
-            // Subscribe to events for this specific player
-            EventBus.Subscribe<OtherPlayerPositionChangedEvent>(OnRemotePositionChanged);
-            EventBus.Subscribe<OtherPlayerFacingChangedEvent>(OnRemoteFacingChanged);
-
             UpdateSprites(currentFacing, 0);
-        }
-
-        private void OnDestroy()
-        {
-            if (!isLocalPlayer)
-            {
-                EventBus.Unsubscribe<OtherPlayerPositionChangedEvent>(OnRemotePositionChanged);
-                EventBus.Unsubscribe<OtherPlayerFacingChangedEvent>(OnRemoteFacingChanged);
-            }
         }
 
         // ====================================================================
@@ -101,21 +80,16 @@ namespace DyeWars.Player
         private void Update()
         {
             if (isMoving)
-            {
                 UpdateMovement();
-            }
         }
 
         private void UpdateMovement()
         {
-            // Advance move timer
             moveTimer += Time.deltaTime;
             float progress = moveTimer / moveDuration;
 
-            // Lerp position
             transform.position = Vector3.Lerp(startPosition, targetPosition, progress);
 
-            // Advance animation
             animationTimer += Time.deltaTime;
             if (animationTimer >= frameTime)
             {
@@ -124,31 +98,25 @@ namespace DyeWars.Player
                 UpdateSprites(currentFacing, walkFrameSequence[currentFrameIndex]);
             }
 
-            // Check if complete
             if (progress >= 1f)
             {
                 isMoving = false;
                 transform.position = targetPosition;
-                UpdateSprites(currentFacing, 0);  // Idle frame
+                UpdateSprites(currentFacing, 0);
             }
         }
 
         // ====================================================================
-        // PUBLIC API
+        // PUBLIC API - Called by LocalPlayerController or PlayerViewFactory
         // ====================================================================
 
-        /// <summary>
-        /// Start moving to a grid position with animation.
-        /// </summary>
         public void MoveTo(Vector2Int gridPos, float duration)
         {
             if (gridService == null)
-            {
                 gridService = ServiceLocator.Get<GridService>();
-            }
 
             moveDuration = duration;
-            frameTime = duration / 4f;  // 4 frames per move cycle
+            frameTime = duration / 4f;
 
             startPosition = transform.position;
             targetPosition = gridService.GridToWorld(gridPos);
@@ -159,102 +127,62 @@ namespace DyeWars.Player
             animationTimer = 0f;
         }
 
-        /// <summary>
-        /// Instantly move to a grid position (no animation).
-        /// </summary>
         public void SnapToPosition(Vector2Int gridPos)
         {
             if (gridService == null)
-            {
                 gridService = ServiceLocator.Get<GridService>();
-            }
 
             transform.position = gridService.GridToWorld(gridPos);
             isMoving = false;
             UpdateSprites(currentFacing, 0);
         }
 
-        /// <summary>
-        /// Set facing direction and update sprites.
-        /// </summary>
         public void SetFacing(int facing)
         {
             currentFacing = facing;
             if (!isMoving)
-            {
                 UpdateSprites(currentFacing, 0);
-            }
         }
 
-        // ====================================================================
-        // REMOTE PLAYER EVENT HANDLERS
-        // ====================================================================
-
-        private void OnRemotePositionChanged(OtherPlayerPositionChangedEvent evt)
+        // Called by PlayerViewFactory for remote player updates
+        public void UpdateFromServer(Vector2Int position, int facing)
         {
-            // Only handle events for our tracked player
-            if (evt.PlayerId != trackedPlayerId) return;
+            if (gridService == null)
+                gridService = ServiceLocator.Get<GridService>();
 
-            // Only animate if position actually changed
             Vector2Int currentGridPos = gridService.WorldToGrid(transform.position);
-            if (evt.Position != currentGridPos)
-            {
-                MoveTo(evt.Position, 0.35f);
-            }
-        }
+            
+            if (position != currentGridPos)
+                MoveTo(position, 0.35f);
 
-        private void OnRemoteFacingChanged(OtherPlayerFacingChangedEvent evt)
-        {
-            // Only handle events for our tracked player
-            if (evt.PlayerId != trackedPlayerId) return;
-
-            SetFacing(evt.Facing);
+            if (facing != currentFacing)
+                SetFacing(facing);
         }
 
         // ====================================================================
         // SPRITE MANAGEMENT
         // ====================================================================
 
-        /// <summary>
-        /// Calculate sprite index from facing direction and frame offset.
-        /// 
-        /// Sprite sheet layout: 3 frames per direction, 4 directions
-        /// Index = (facing * 3) + frameOffset
-        /// 
-        /// Example for facing Right (1), frame 1:
-        ///   (1 * 3) + 1 = 4
-        /// </summary>
         private int GetSpriteIndex(int facing, int frameOffset)
         {
             return (facing * 3) + frameOffset;
         }
 
-        /// <summary>
-        /// Update all sprite layers to show the correct frame.
-        /// </summary>
         private void UpdateSprites(int facing, int frameOffset)
         {
             int index = GetSpriteIndex(facing, frameOffset);
 
-            // Body
             if (bodySprites != null && index < bodySprites.Length && bodyRenderer != null)
-            {
                 bodyRenderer.sprite = bodySprites[index];
-            }
 
-            // Head (with sort order adjustment for facing up)
             if (headSprites != null && index < headSprites.Length && headRenderer != null)
             {
                 headRenderer.sprite = headSprites[index];
-                // When facing up, head should render behind body
                 headRenderer.sortingOrder = (facing == Direction.Up) ? -1 : 1;
             }
 
-            // Weapon
             if (weaponSprites != null && index < weaponSprites.Length && weaponRenderer != null)
-            {
                 weaponRenderer.sprite = weaponSprites[index];
-            }
         }
     }
 }

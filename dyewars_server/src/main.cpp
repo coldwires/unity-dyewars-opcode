@@ -5,18 +5,19 @@
 #include <iostream>
 #include <memory>
 #include <thread>
-#include "server/GameServer.h"
-#include "network/BandwidthMonitor.h"
 #include "core/Log.h"
+#include "network/BandwidthMonitor.h"
+#include "server/GameServer.h"
 
 #ifdef _WIN32
 #include <windows.h>
 #endif
 
-int main() {
+int main()
+{
     /// Only for displaying color in terminal
 #ifdef _WIN32
-    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    const HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     DWORD dwMode = 0;
     GetConsoleMode(hOut, &dwMode);
     SetConsoleMode(hOut, dwMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
@@ -28,24 +29,29 @@ int main() {
     std::unique_ptr<GameServer> server;
     std::thread io_thread;
 
-    auto start_server = [&]() {
-        if (server) {
+    auto start_server = [&]()
+    {
+        if (server)
+        {
             Log::Warn("Server already running");
             return;
         }
-        try {
+        try
+        {
             io_context = std::make_unique<asio::io_context>();
             server = std::make_unique<GameServer>(*io_context);
             io_thread = std::thread([&]() { io_context->run(); });
             Log::Info("Server started.");
         }
-        catch (const std::exception& e) {
+        catch (const std::exception& e)
+        {
             Log::Error("Failed to start server: {}", e.what());
             server.reset();
             io_context.reset();
         }
-        };
-    auto stop_server = [&]() {
+    };
+    auto stop_server = [&]()
+    {
         if (!server)
         {
             Log::Warn("Server not running");
@@ -56,65 +62,76 @@ int main() {
         server.reset();
         io_context.reset();
         Log::Info("Server stopped.");
-        };
+    };
 
     //auto-start on launch
     start_server();
 
     //Console Loop
     std::string cmd;
-    while (true) {
+    while (true)
+    {
         std::cout << "> ";
         if (!std::getline(std::cin, cmd)) break;
 
-        if (cmd == "start") {
+        if (cmd == "start")
+        {
             start_server();
         }
-        else if (cmd == "stop" || cmd == "q") {
+        else if (cmd == "stop" || cmd == "q")
+        {
             stop_server();
         }
-        else if (cmd == "restart") {
+        else if (cmd == "restart")
+        {
             stop_server();
             start_server();
         }
-        else if (cmd == "exit" || cmd == "quit") {
+        else if (cmd == "exit" || cmd == "quit")
+        {
             stop_server();
             break;
         }
-        else if (cmd == "r") {
+        else if (cmd == "r")
+        {
             if (server) server->ReloadScripts();
             else Log::Warn("Server not running.");
         }
-        else if (cmd == "stats") {
+        else if (cmd == "stats")
+        {
             std::cout << BandwidthMonitor::Instance().GetStats() << std::endl;
-            if (server) {
+            if (server)
+            {
                 std::cout << "Clients: " << server->Clients().Count()
-                          << " Players: " << server->Players().Count() << std::endl;
+                    << " Players: " << server->Players().Count() << std::endl;
             }
         }
-        else if (cmd == "status") {
+        else if (cmd == "status")
+        {
             Log::Info("Server is {}", server ? "running" : "stopped");
         }
-        else if (cmd == "debug") {
+        else if (cmd == "debug")
+        {
             Log::Level = 0;
             Log::Info("Log level set to TRACE");
         }
-        else if (cmd == "help") {
+        else if (cmd == "help")
+        {
             std::cout << "Commands:\n"
-                      << "  start    - Start the server\n"
-                      << "  stop     - Stop the server\n"
-                      << "  restart  - Restart the server\n"
-                      << "  r/reload - Reload Lua scripts\n"
-                      << "  stats    - Show bandwidth and player stats\n"
-                      << "  status   - Show server status\n"
-                      << "  debug    - Enable trace logging\n"
-                      << "  exit     - Stop server and exit\n";
+                << "  start    - Start the server\n"
+                << "  stop     - Stop the server\n"
+                << "  restart  - Restart the server\n"
+                << "  r/reload - Reload Lua scripts\n"
+                << "  stats    - Show bandwidth and player stats\n"
+                << "  status   - Show server status\n"
+                << "  debug    - Enable trace logging\n"
+                << "  exit     - Stop server and exit\n";
         }
-        else if (!cmd.empty()) {
+        else if (!cmd.empty())
+        {
             std::cout << "Unknown command. Type 'help' for available commands.\n";
         }
     }
 
     return 0;
-
 }

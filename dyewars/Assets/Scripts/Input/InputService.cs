@@ -93,7 +93,7 @@ namespace DyeWars.Input
                     Direction = currentDirection,
                     TimeSinceRelease = capturedTimeSinceRelease,
                     IsNewDirection = directionChangedThisFrame
-                });
+                }, this);
             }
 
             lastDirection = currentDirection;

@@ -1,91 +1,205 @@
-﻿// EventBus.cs
-// A simple publish/subscribe event system that decouples publishers from subscribers.
-// Any class can publish events without knowing who's listening.
-// Any class can subscribe to events without knowing who's publishing.
-//
-// Usage:
-//   EventBus.Subscribe<PlayerMovedEvent>(OnPlayerMoved);
-//   EventBus.Publish(new PlayerMovedEvent { PlayerId = id, Position = pos });
-//   EventBus.Unsubscribe<PlayerMovedEvent>(OnPlayerMoved);
-
-using System;
+﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using UnityEngine;
+using Debug = UnityEngine.Debug;
 
-namespace DyeWars.Core
+public static class EventBus
 {
-    public static class EventBus
+    private static Dictionary<Type, object> channels = new();
+    private static Dictionary<Type, List<ListenerInfo>> listenerInfos = new();
+    private static Dictionary<Type, int> publishCounts = new();
+    private static Dictionary<Type, object> lastPublished = new();
+    private static Dictionary<Type, List<PublishInfo>> recentPublishers = new();
+
+    [Serializable]
+    public class ListenerInfo
     {
-        private static readonly Dictionary<Type, List<Delegate>> subscribers = new Dictionary<Type, List<Delegate>>();
+        public string gameObjectName;
+        public string componentType;
+        public string methodName;
+        public override string ToString() => $"{gameObjectName} → {componentType}.{methodName}";
+    }
 
-        /// <summary>
-        /// Subscribe to an event type. Your handler will be called when that event is published.
-        /// </summary>
-        public static void Subscribe<T>(Action<T> handler) where T : struct
+    [Serializable]
+    public class PublishInfo
+    {
+        public string gameObjectName;
+        public string componentType;
+        public string methodName;
+        public string timestamp;
+        public int count;
+
+        public string Key => $"{gameObjectName}_{componentType}_{methodName}";
+    }
+
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+    private static void Init()
+    {
+        // Clear on domain reload (entering play mode)
+        ClearAll();
+    }
+
+    public static void Subscribe<T>(Action<T> listener) where T : struct
+    {
+        var type = typeof(T);
+
+        if (!channels.ContainsKey(type))
         {
-            var type = typeof(T);
-
-            if (!subscribers.ContainsKey(type))
-            {
-                subscribers[type] = new List<Delegate>();
-            }
-
-            subscribers[type].Add(handler);
+            channels[type] = new List<Action<T>>();
+            listenerInfos[type] = new List<ListenerInfo>();
+            publishCounts[type] = 0;
+            recentPublishers[type] = new List<PublishInfo>();
         }
 
-        /// <summary>
-        /// Unsubscribe from an event type. Always unsubscribe in OnDestroy to prevent memory leaks.
-        /// </summary>
-        public static void Unsubscribe<T>(Action<T> handler) where T : struct
-        {
-            var type = typeof(T);
+        ((List<Action<T>>)channels[type]).Add(listener);
 
-            if (subscribers.TryGetValue(type, out var handlers))
-            {
-                handlers.Remove(handler);
-            }
+        var info = new ListenerInfo { methodName = listener.Method.Name };
+
+        if (listener.Target is MonoBehaviour mb)
+        {
+            info.gameObjectName = mb.gameObject.name;
+            info.componentType = mb.GetType().Name;
+        }
+        else if (listener.Target != null)
+        {
+            info.gameObjectName = "(no GameObject)";
+            info.componentType = listener.Target.GetType().Name;
+        }
+        else
+        {
+            info.gameObjectName = "(static)";
+            info.componentType = "";
         }
 
-        /// <summary>
-        /// Publish an event. All subscribers to this event type will be notified.
-        /// </summary>
-        public static void Publish<T>(T eventData) where T : struct
-        {
-            var type = typeof(T);
+        listenerInfos[type].Add(info);
+    }
 
-            if (subscribers.TryGetValue(type, out var handlers))
+    public static void Unsubscribe<T>(Action<T> listener) where T : struct
+    {
+        var type = typeof(T);
+        if (channels.TryGetValue(type, out var list))
+        {
+            var index = ((List<Action<T>>)list).IndexOf(listener);
+            if (index >= 0)
             {
-                // Iterate in reverse so handlers can unsubscribe during iteration
-                for (int i = handlers.Count - 1; i >= 0; i--)
+                ((List<Action<T>>)list).RemoveAt(index);
+                listenerInfos[type].RemoveAt(index);
+            }
+        }
+    }
+
+    public static void Publish<T>(T data, MonoBehaviour publisher) where T : struct
+    {
+        var stack = new StackTrace(1, false);
+        var frame = stack.GetFrame(0);
+        var method = frame?.GetMethod()?.Name ?? "unknown";
+
+        TrackPublisher<T>(publisher.gameObject.name, publisher.GetType().Name, method);
+        PublishInternal(data);
+    }
+
+    public static void Publish<T>(T data) where T : struct
+    {
+        CapturePublisherFromStack<T>();
+        PublishInternal(data);
+    }
+
+    private static void CapturePublisherFromStack<T>() where T : struct
+    {
+        var stack = new StackTrace(2, false);
+        var frame = stack.GetFrame(0);
+        var method = frame?.GetMethod();
+
+        var goName = "(via stack trace)";
+        var compType = method?.DeclaringType?.Name ?? "unknown";
+        var methodName = method?.Name ?? "unknown";
+
+        TrackPublisher<T>(goName, compType, methodName);
+    }
+
+    private static void TrackPublisher<T>(string goName, string compType, string method) where T : struct
+    {
+        var type = typeof(T);
+
+        if (!recentPublishers.ContainsKey(type))
+            recentPublishers[type] = new List<PublishInfo>();
+
+        var list = recentPublishers[type];
+        var key = $"{goName}_{compType}_{method}";
+
+        var existing = list.Find(p => p.Key == key);
+
+        if (existing != null)
+        {
+            existing.count++;
+            existing.timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
+        }
+        else
+        {
+            list.Add(new PublishInfo
+            {
+                timestamp = DateTime.Now.ToString("HH:mm:ss.fff"),
+                gameObjectName = goName,
+                componentType = compType,
+                methodName = method,
+                count = 1
+            });
+
+            if (list.Count > 10)
+                list.RemoveAt(0);
+        }
+    }
+
+    private static void PublishInternal<T>(T data) where T : struct
+    {
+        var type = typeof(T);
+
+        if (!publishCounts.ContainsKey(type))
+            publishCounts[type] = 0;
+
+        lastPublished[type] = data;
+        publishCounts[type]++;
+
+        if (channels.TryGetValue(type, out var list))
+        {
+            var listeners = (List<Action<T>>)list;
+            for (int i = listeners.Count - 1; i >= 0; i--)
+            {
+                try
                 {
-                    try
-                    {
-                        (handlers[i] as Action<T>)?.Invoke(eventData);
-                    }
-                    catch (Exception e)
-                    {
-                        Debug.LogError($"EventBus: Error invoking handler for {type.Name}: {e.Message}");
-                    }
+                    listeners[i]?.Invoke(data);
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[EventBus] Error in {typeof(T).Name} handler: {ex}");
                 }
             }
         }
+    }
 
-        /// <summary>
-        /// Clear all subscribers. Call this when reloading the game.
-        /// </summary>
-        public static void Clear()
-        {
-            subscribers.Clear();
-            Debug.Log("EventBus: Cleared all subscribers");
-        }
+    // Debug API
+    public static List<Type> GetRegisteredTypes() => new(channels.Keys);
+    public static List<ListenerInfo> GetListenerInfosForType(Type t) => listenerInfos.GetValueOrDefault(t) ?? new();
+    public static List<PublishInfo> GetPublishersForType(Type t) => recentPublishers.GetValueOrDefault(t) ?? new();
+    public static int GetPublishCountForType(Type t) => publishCounts.GetValueOrDefault(t);
+    public static object GetLastPublishedForType(Type t) => lastPublished.GetValueOrDefault(t);
 
-        /// <summary>
-        /// Get subscriber count for debugging.
-        /// </summary>
-        public static int GetSubscriberCount<T>() where T : struct
-        {
-            var type = typeof(T);
-            return subscribers.TryGetValue(type, out var handlers) ? handlers.Count : 0;
-        }
+    public static void ClearAllStats()
+    {
+        var types = new List<Type>(publishCounts.Keys);
+        foreach (var type in types)
+            publishCounts[type] = 0;
+        lastPublished.Clear();
+        recentPublishers.Clear();
+    }
+
+    public static void ClearAll()
+    {
+        channels.Clear();
+        listenerInfos.Clear();
+        publishCounts.Clear();
+        lastPublished.Clear();
+        recentPublishers.Clear();
     }
 }

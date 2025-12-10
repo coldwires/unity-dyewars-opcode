@@ -78,6 +78,18 @@ namespace DyeWars.Network.Protocol
                 data.Add((byte)(value & 0xFF));
             }
 
+            public void WriteU64(ulong value)
+            {
+                data.Add((byte)((value >> 56) & 0xFF));
+                data.Add((byte)((value >> 48) & 0xFF));
+                data.Add((byte)((value >> 40) & 0xFF));
+                data.Add((byte)((value >> 32) & 0xFF));
+                data.Add((byte)((value >> 24) & 0xFF));
+                data.Add((byte)((value >> 16) & 0xFF));
+                data.Add((byte)((value >> 8) & 0xFF));
+                data.Add((byte)(value & 0xFF));
+            }
+
             public void WriteS16(short value)
             {
                 WriteU16((ushort)value);
@@ -93,6 +105,24 @@ namespace DyeWars.Network.Protocol
                 data.AddRange(bytes);
             }
 
+            /// <summary>
+            /// Write a length-prefixed UTF8 string (1-byte length prefix).
+            /// Maximum string length is 255 bytes after UTF8 encoding.
+            /// </summary>
+            public void WriteString(string value)
+            {
+                byte[] bytes = System.Text.Encoding.UTF8.GetBytes(value ?? "");
+                if (bytes.Length > 255)
+                {
+                    UnityEngine.Debug.LogWarning($"PacketWriter: String truncated from {bytes.Length} to 255 bytes");
+                    byte[] truncated = new byte[255];
+                    Array.Copy(bytes, truncated, 255);
+                    bytes = truncated;
+                }
+                WriteU8((byte)bytes.Length);
+                data.AddRange(bytes);
+            }
+
             public byte[] ToArray()
             {
                 return data.ToArray();
@@ -100,22 +130,3 @@ namespace DyeWars.Network.Protocol
         }
     }
 }
-
-    /// <summary>
-    /// Packet opcodes - centralized definition of all packet types.
-    /// </summary>
-    public static class PacketOpcodez
-    {
-        // Client -> Server
-        public const byte Move = 0x01;
-        public const byte Turn = 0x04;
-
-        // Server -> Client
-        public const byte MyPosition = 0x10;
-        public const byte CustomResponse = 0x11;
-        public const byte OtherPlayerUpdate = 0x12;
-        public const byte PlayerIdAssignment = 0x13;
-        public const byte PlayerLeft = 0x14;
-        public const byte FacingUpdate = 0x15;
-        public const byte BatchUpdate = 0x20;
-    }

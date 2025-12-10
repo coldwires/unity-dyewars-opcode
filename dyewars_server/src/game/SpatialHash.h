@@ -1,0 +1,301 @@
+/// =======================================
+/// DyeWarsServer - SpatialHash
+/// O(1) spatial lookups for dynamic entities
+///
+/// Divides the world into grid cells. Each cell tracks which entities are in it.
+/// Used by World for efficient "who's nearby" queries.
+///
+/// Created by Anonymous on Dec 07, 2025
+/// =======================================
+#pragma once
+
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+#include <memory>
+#include <cstdint>
+#include <functional>
+
+#include "Player.h"
+
+/// ============================================================================
+/// SPATIAL HASH
+///
+/// Grid-based spatial partitioning for O(K) range queries.
+///
+/// Example: VIEW_RANGE = 5, player at (5,5) sees rectangle (0,0) to (10,10)
+///
+/// Without spatial hash: "Who's near X?" = check all N entities = O(N)
+/// With spatial hash:    "Who's near X?" = check K entities in nearby cells = O(K)
+///
+/// K is typically 10-50, while N could be 500+. Big difference!
+/// ============================================================================
+class SpatialHash {
+public:
+    /// ========================================================================
+    /// CONFIGURATION
+    /// ========================================================================
+
+    /// Cell size in tiles.
+    ///
+    /// Tune based on VIEW_RANGE:
+    /// - If VIEW_RANGE = 5, CELL_SIZE = 8 means checking ~4 cells covers view
+    /// - Too small = many cells, more hash operations
+    /// - Too large = many entities per cell, slower filtering
+    /// - Rule of thumb: CELL_SIZE ≈ VIEW_RANGE × 1.5
+    static constexpr int16_t CELL_SIZE = 8;  // TODO: Could be uint16_t (map is always positive)
+
+    /// ========================================================================
+    /// ENTITY MANAGEMENT
+    /// ========================================================================
+
+    /// Add an entity to the spatial hash
+    /// Call when entity spawns or enters the world
+    void Add(uint64_t entity_id,
+             int16_t x,    // TODO: Could be uint16_t
+             int16_t y,    // TODO: Could be uint16_t
+             std::shared_ptr<Player> entity = nullptr) {
+        int64_t key = CellKey(x, y);
+        cells_[key].insert(entity_id);
+        entity_cells_[entity_id] = key;
+
+        if (entity) {
+            entity_ptrs_[entity_id] = entity;
+        }
+    }
+
+    /// Remove an entity from the spatial hash
+    /// Call when entity despawns or leaves the world
+    void Remove(uint64_t entity_id) {
+        auto it = entity_cells_.find(entity_id);
+        if (it == entity_cells_.end()) return;
+
+        // Remove from cell
+        int64_t key = it->second;
+        cells_[key].erase(entity_id);
+
+        // Clean up empty cells to prevent memory bloat
+        if (cells_[key].empty()) {
+            cells_.erase(key);
+        }
+
+        // Remove from tracking maps
+        entity_cells_.erase(it);
+        entity_ptrs_.erase(entity_id);
+    }
+
+    /// Update an entity's position
+    /// Call when entity moves. Only modifies data if entity changed cells.
+    /// Returns true if entity changed cells (useful for enter/leave events)
+    bool Update(uint64_t entity_id,
+                int16_t new_x,   // TODO: Could be uint16_t
+                int16_t new_y) { // TODO: Could be uint16_t
+        auto it = entity_cells_.find(entity_id);
+        if (it == entity_cells_.end()) {
+            return false;  // Entity not in spatial hash, can't update
+        }
+
+        int64_t new_key = CellKey(new_x, new_y);
+
+        // Same cell? No update needed (common case!)
+        // Players often move within the same cell many times
+        if (it->second == new_key) {
+            return false;
+        }
+
+        // Remove from old cell
+        int64_t old_key = it->second;
+        cells_[old_key].erase(entity_id);
+        if (cells_[old_key].empty()) {
+            cells_.erase(old_key);
+        }
+
+        // Add to new cell
+        cells_[new_key].insert(entity_id);
+        entity_cells_[entity_id] = new_key;
+
+        return true;  // Changed cells
+    }
+
+    /// ========================================================================
+    /// SPATIAL QUERIES
+    /// ========================================================================
+
+    /// Get all entity IDs within range of a position
+    /// Returns entities in cells that overlap with the range
+    /// Note: This is a COARSE filter. Caller should do exact distance check.
+    ///
+    /// For a 2D tile RPG with VIEW_RANGE = 5:
+    /// Player at (5,5) sees tiles (0,0) to (10,10) — an 11×11 rectangle
+    std::vector<uint64_t> GetNearbyIDs(int16_t x,      // TODO: Could be uint16_t
+                                       int16_t y,      // TODO: Could be uint16_t
+                                       int16_t range)  // TODO: Could be uint16_t
+    const {
+        std::vector<uint64_t> result;
+
+        // Convert position to cell index
+        int32_t center_cx = x / CELL_SIZE;
+        int32_t center_cy = y / CELL_SIZE;
+
+        // How many cells do we need to check in each direction?
+        // +1 to handle entities at cell boundaries
+        int32_t cells_radius = (range / CELL_SIZE) + 1;
+
+        // Check all cells in the square region around the center cell
+        for (int32_t dcx = -cells_radius; dcx <= cells_radius; dcx++) {
+            for (int32_t dcy = -cells_radius; dcy <= cells_radius; dcy++) {
+                int32_t cx = center_cx + dcx;
+                int32_t cy = center_cy + dcy;
+
+                // Skip negative cells (map starts at 0,0)
+                if (cx < 0 || cy < 0) continue;
+
+                int64_t key = MakeCellKey(cx, cy);
+
+                auto it = cells_.find(key);
+                if (it != cells_.end()) {
+                    for (uint64_t id: it->second) {
+                        result.push_back(id);
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    /// Get all entity pointers within range
+    /// More convenient when you need actual entity data
+    /// Optimized: directly iterates cells without intermediate ID vector
+    std::vector<std::shared_ptr<Player>> GetNearbyEntities(int16_t x,     // TODO: Could be uint16_t
+                                                           int16_t y,     // TODO: Could be uint16_t
+                                                           int16_t range) // TODO: Could be uint16_t
+    const {
+        std::vector<std::shared_ptr<Player>> result;
+
+        // Convert position to cell index
+        int32_t center_cx = x / CELL_SIZE;
+        int32_t center_cy = y / CELL_SIZE;
+        int32_t cells_radius = (range / CELL_SIZE) + 1;
+
+        // Check all cells in the square region around the center cell
+        for (int32_t dcx = -cells_radius; dcx <= cells_radius; dcx++) {
+            for (int32_t dcy = -cells_radius; dcy <= cells_radius; dcy++) {
+                int32_t cx = center_cx + dcx;
+                int32_t cy = center_cy + dcy;
+
+                if (cx < 0 || cy < 0) continue;
+
+                int64_t key = MakeCellKey(cx, cy);
+                auto cell_it = cells_.find(key);
+                if (cell_it != cells_.end()) {
+                    for (uint64_t id : cell_it->second) {
+                        auto ptr_it = entity_ptrs_.find(id);
+                        if (ptr_it != entity_ptrs_.end() && ptr_it->second) {
+                            result.push_back(ptr_it->second);
+                        }
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    /// ========================================================================
+    /// ENTITY LOOKUP
+    /// ========================================================================
+
+    /// Get entity pointer by ID
+    std::shared_ptr<Player> GetEntity(uint64_t entity_id) const {
+        auto it = entity_ptrs_.find(entity_id);
+        return (it != entity_ptrs_.end()) ? it->second : nullptr;
+    }
+
+    /// Check if entity exists in spatial hash
+    bool Contains(uint64_t entity_id) const {
+        return entity_cells_.find(entity_id) != entity_cells_.end();
+    }
+
+    /// Check if a player is at exact position (excluding a specific player)
+    /// Returns true if any player other than exclude_id is at (x, y)
+    bool IsPlayerAt(int16_t x, int16_t y, uint64_t exclude_id = 0) const {
+        int64_t key = CellKey(x, y);
+        auto cell_it = cells_.find(key);
+        if (cell_it == cells_.end()) return false;
+
+        for (uint64_t id : cell_it->second) {
+            if (id == exclude_id) continue;
+            auto ptr_it = entity_ptrs_.find(id);
+            if (ptr_it != entity_ptrs_.end() && ptr_it->second) {
+                if (ptr_it->second->GetX() == x && ptr_it->second->GetY() == y) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// Get total entity count
+    size_t Count() const {
+        return entity_cells_.size();
+    }
+
+    /// ========================================================================
+    /// ITERATION
+    /// ========================================================================
+
+    /// Iterate over all entities
+    void ForEach(const std::function<void(uint64_t, const std::shared_ptr<Player> &)> &func) const {
+        for (const auto &[id, entity]: entity_ptrs_) {
+            if (entity) {
+                func(id, entity);
+            }
+        }
+    }
+
+    /// ========================================================================
+    /// MAINTENANCE
+    /// ========================================================================
+
+    /// Clear all data
+    void Clear() {
+        cells_.clear();
+        entity_cells_.clear();
+        entity_ptrs_.clear();
+    }
+
+    /// Get number of active cells (for debugging)
+    size_t CellCount() const {
+        return cells_.size();
+    }
+
+private:
+    /// ========================================================================
+    /// INTERNAL - Cell Key Calculation
+    /// ========================================================================
+
+    /// Create cell key from cell indices
+    static int64_t MakeCellKey(int32_t cx, int32_t cy) {
+        return (static_cast<int64_t>(cx) << 32) | static_cast<uint32_t>(cy);
+    }
+
+    /// Convert world coordinates to a unique cell key
+    /// Map coordinates are always positive (0,0 to width,height)
+    static int64_t CellKey(int16_t x, int16_t y) {  // TODO: Could be uint16_t
+        int32_t cx = x / CELL_SIZE;
+        int32_t cy = y / CELL_SIZE;
+        return MakeCellKey(cx, cy);
+    }
+
+    /// ========================================================================
+    /// DATA
+    /// ========================================================================
+
+    /// cell_key -> set of entity IDs in that cell
+    std::unordered_map<int64_t, std::unordered_set<uint64_t>> cells_;
+
+    /// entity_id -> current cell key (for O(1) removal and move detection)
+    std::unordered_map<uint64_t, int64_t> entity_cells_;
+
+    /// entity_id -> entity pointer (for returning actual entities)
+    std::unordered_map<uint64_t, std::shared_ptr<Player>> entity_ptrs_;
+};
