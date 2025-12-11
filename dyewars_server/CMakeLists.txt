@@ -8,6 +8,37 @@ project(DyeWarsServer)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# =============================================================================
+# Sanitizer Options (Linux/macOS only, GCC/Clang)
+# Usage: cmake -B build -DENABLE_TSAN=ON
+# =============================================================================
+option(ENABLE_TSAN "Enable ThreadSanitizer for data race detection" OFF)
+option(ENABLE_ASAN "Enable AddressSanitizer for memory error detection" OFF)
+
+if(ENABLE_TSAN AND ENABLE_ASAN)
+    message(FATAL_ERROR "TSAN and ASAN cannot be enabled simultaneously")
+endif()
+
+if(ENABLE_TSAN)
+    if(MSVC)
+        message(WARNING "ThreadSanitizer not supported on MSVC, ignoring ENABLE_TSAN")
+    else()
+        message(STATUS "ThreadSanitizer ENABLED - use for detecting data races")
+        add_compile_options(-fsanitize=thread -g)
+        add_link_options(-fsanitize=thread)
+    endif()
+endif()
+
+if(ENABLE_ASAN)
+    if(MSVC)
+        message(WARNING "AddressSanitizer not fully supported on MSVC, ignoring ENABLE_ASAN")
+    else()
+        message(STATUS "AddressSanitizer ENABLED - use for detecting memory errors")
+        add_compile_options(-fsanitize=address -fno-omit-frame-pointer -g)
+        add_link_options(-fsanitize=address)
+    endif()
+endif()
+
 # Find packages
 find_package(asio CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)

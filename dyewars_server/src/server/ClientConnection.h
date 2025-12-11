@@ -56,7 +56,7 @@ private:
 ///
 ///   - client_id_: Immutable after construction, safe to read anywhere
 ///   - client_ip_: Immutable after construction, safe to read anywhere
-///   - ping_sent_time_: Atomic, written by SendPing(), read by PacketHandler
+///   - ping_sent_time_: Atomic, written by game thread, read by IO thread
 ///   - ping_ (PingTracker): Thread-safe internally (atomic average)
 ///   - disconnecting_: Atomic, used for double-disconnect prevention
 ///
@@ -114,12 +114,12 @@ public:
     uint32_t GetPing() const { return ping_.Get(); }
 
     /// Get timestamp when last ping was sent (for RTT calculation).
-    /// Returns the time point atomically - safe to call from any thread.
+    /// Returns the time point atomically - safe to call from IO thread.
     ///
     /// WHY THIS IS NEEDED:
     /// When the client sends a pong back, PacketHandler (on IO thread) needs
-    /// to calculate RTT = now - ping_sent_time. If SendPing is setting
-    /// ping_sent_time while PacketHandler is reading it, we'd get a torn read.
+    /// to calculate RTT = now - ping_sent_time. The game thread sets this
+    /// value via SendPing(), so we need atomic access to prevent torn reads.
     ///
     /// ALTERNATIVE APPROACHES:
     /// 1. Include timestamp in ping packet, client echoes it back (no shared state)
@@ -275,8 +275,8 @@ private:
 
     /// Timestamp when we last sent a ping request.
     /// ATOMIC because:
-    ///   - Written by SendPing() (called from timer, could be any thread)
-    ///   - Read by PacketHandler when pong arrives (IO thread)
+    ///   - Written by Game thread (SendPingToAllClients → SendPing → SetPingSentTime)
+    ///   - Read by IO thread (PacketHandler when pong arrives → GetPingSentTime)
     ///
     /// WHY std::atomic<time_point> WORKS:
     /// std::chrono::steady_clock::time_point is typically 8 bytes (int64 nanoseconds).

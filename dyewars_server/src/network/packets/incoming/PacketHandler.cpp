@@ -80,7 +80,7 @@ namespace PacketHandler {
                 // RTT = now - time_when_ping_was_sent
                 //
                 // We use the atomic getter because:
-                // - SendPing() writes ping_sent_time_ (possibly from timer thread)
+                // - Game thread writes ping_sent_time_ (via SendPingToAllClients → SendPing)
                 // - We're reading it here (IO thread)
                 // - Without atomics, we could get a torn read (half-updated timestamp)
                 //
