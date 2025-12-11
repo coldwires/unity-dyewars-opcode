@@ -14,6 +14,7 @@
 #include <vector>
 #include <sqlite3.h>
 #include <iostream>
+#include <stdexcept>
 #include <queue>
 #include <mutex>
 #include <thread>
@@ -60,9 +61,11 @@ public:
     DatabaseManager(const std::string &db_path = "data/gameDB.sqlite") {
         int rc = sqlite3_open(db_path.c_str(), &db_);
         if (rc != SQLITE_OK) {
-            std::cerr << "Failed to open database: " << sqlite3_errmsg(db_) << std::endl;
+            std::string error_msg = "Failed to open database: ";
+            error_msg += sqlite3_errmsg(db_);
+            if (db_) sqlite3_close(db_);
             db_ = nullptr;
-            return;
+            throw std::runtime_error(error_msg);
         }
 
         // Enable WAL mode for better concurrency

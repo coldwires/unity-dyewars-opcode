@@ -98,3 +98,46 @@ target_include_directories(DyeWarsServer PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${LUA_INCLUDE_DIR}
 )
+
+# =============================================================================
+# Tests (optional)
+# Usage: cmake -B build -DBUILD_TESTS=ON
+# =============================================================================
+option(BUILD_TESTS "Build unit tests" OFF)
+
+if(BUILD_TESTS)
+    message(STATUS "Building tests enabled")
+
+    # Gather test sources (exclude main.cpp from server sources)
+    file(GLOB_RECURSE TEST_SERVER_SOURCES
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/server/*.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/game/*.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/network/*.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/database/*.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/lua/*.cpp"
+    )
+
+    add_executable(DyeWarsTests
+            tests/test_cleanup.cpp
+            ${TEST_SERVER_SOURCES}
+    )
+
+    target_link_libraries(DyeWarsTests PRIVATE
+            asio::asio
+            nlohmann_json::nlohmann_json
+            spdlog::spdlog
+            sol2::sol2
+            SQLite::SQLite3
+            ${LUA_LIBRARIES}
+    )
+
+    target_include_directories(DyeWarsTests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${LUA_INCLUDE_DIR}
+    )
+
+    # Enable CTest
+    enable_testing()
+    add_test(NAME CleanupTests COMMAND DyeWarsTests)
+endif()
