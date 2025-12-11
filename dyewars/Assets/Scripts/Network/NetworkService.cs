@@ -27,7 +27,12 @@ namespace DyeWars.Network
         [SerializeField] private string serverHost = "127.0.0.1";
         [SerializeField] private int serverPort = 8080;
         [SerializeField] private bool connectOnStart = false;
-        private volatile bool connectedToServer = false;
+
+        // Thread Safety: Background thread sets pendingConnectionEvent, main thread reads and clears it.
+        // This is safer than volatile alone because we need atomic "check AND clear" operation.
+        // Without lock: Thread A checks (true), Thread B checks (true), both publish event = duplicate!
+        private readonly object connectionEventLock = new object();
+        private bool pendingConnectionEvent = false;
 
         // Sub-components (composition over inheritance)
         private NetworkConnection connection;
@@ -79,11 +84,22 @@ namespace DyeWars.Network
 
         private void Update()
         {
-            if (connectedToServer)
+            // Check for pending connection event (thread-safe)
+            bool shouldPublishConnected = false;
+            lock (connectionEventLock)
+            {
+                if (pendingConnectionEvent)
+                {
+                    shouldPublishConnected = true;
+                    pendingConnectionEvent = false;
+                }
+            }
+
+            if (shouldPublishConnected)
             {
                 EventBus.Publish(new ConnectedToServerEvent(), this);
-                connectedToServer = false;
             }
+
             ProcessQueues();
         }
 
@@ -163,14 +179,20 @@ namespace DyeWars.Network
         }
 
         /// <summary>
-        /// Called when connected to server. RUNS ON BACKGROUND THREAD! 
+        /// Called when connected to server. RUNS ON BACKGROUND THREAD!
         /// </summary>
         private void OnConnectedFromBackground()
         {
             // Send handshake packet immediately
             // This is safe because SendHandshake only queues data to send, no Unity access
             sender.SendHandshake();
-            connectedToServer = true;
+
+            // Signal main thread to publish connection event
+            lock (connectionEventLock)
+            {
+                pendingConnectionEvent = true;
+            }
+
             Debug.Log("NetworkService: Connected (from background thread)");
         }
 

@@ -1,11 +1,14 @@
-﻿// PlayerRegistry.cs
+// PlayerRegistry.cs
 // Centralized storage for all player data (local and remote).
 // This is the single source of truth for player state.
 //
 // Other systems query this registry to get player information.
 // Subscribes to EventBus events to update player data.
+//
+// Thread Safety: Uses playerLock for dictionary access.
 
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 using DyeWars.Core;
 using DyeWars.Game;
@@ -14,6 +17,10 @@ namespace DyeWars.Player
 {
     public class PlayerRegistry : MonoBehaviour
     {
+        // Thread Safety: Protects players dictionary and localPlayer reference.
+        // Event handlers (from EventBus) can fire while other code iterates players.
+        private readonly object playerLock = new object();
+
         // All players indexed by their ID
         private readonly Dictionary<ulong, PlayerData> players = new Dictionary<ulong, PlayerData>();
 
@@ -23,10 +30,27 @@ namespace DyeWars.Player
         // Grid service for bounds validation
         private GridService gridService;
 
-        // Public access
-        public PlayerData LocalPlayer => localPlayer;
-        public IReadOnlyDictionary<ulong, PlayerData> AllPlayers => players;
-        public int PlayerCount => players.Count;
+        // Public access (thread-safe)
+        public PlayerData LocalPlayer
+        {
+            get { lock (playerLock) { return localPlayer; } }
+        }
+
+        public int PlayerCount
+        {
+            get { lock (playerLock) { return players.Count; } }
+        }
+
+        // PATTERN: Return a COPY, not the original dictionary.
+        // Why? Caller can safely iterate the copy without holding our lock,
+        // and won't see ConcurrentModificationException if players join/leave mid-iteration.
+        public Dictionary<ulong, PlayerData> GetAllPlayersSnapshot()
+        {
+            lock (playerLock)
+            {
+                return new Dictionary<ulong, PlayerData>(players);
+            }
+        }
 
         // ====================================================================
         // UNITY LIFECYCLE
@@ -68,46 +92,60 @@ namespace DyeWars.Player
         }
 
         // ====================================================================
-        // PUBLIC API - Queries
+        // PUBLIC API - Queries (thread-safe)
         // ====================================================================
 
         public PlayerData GetPlayer(ulong playerId)
         {
-            return players.TryGetValue(playerId, out var player) ? player : null;
+            lock (playerLock)
+            {
+                return players.TryGetValue(playerId, out var player) ? player : null;
+            }
         }
 
         public bool TryGetLocalPlayerID(out ulong playerId)
         {
-            if (localPlayer != null)
+            lock (playerLock)
             {
-                playerId = localPlayer.PlayerId;
-                return true;
+                if (localPlayer != null)
+                {
+                    playerId = localPlayer.PlayerId;
+                    return true;
+                }
+                playerId = default;
+                return false;
             }
-            playerId = default;
-            return false;
         }
 
         public bool IsPositionOccupied(Vector2Int position)
         {
-            foreach (var player in players.Values)
+            lock (playerLock)
             {
-                if (player.Position == position)
-                    return true;
+                foreach (var player in players.Values)
+                {
+                    if (player.Position == position)
+                        return true;
+                }
+                return false;
             }
-            return false;
         }
 
         public bool HasPlayer(ulong playerId)
         {
-            return players.ContainsKey(playerId);
+            lock (playerLock)
+            {
+                return players.ContainsKey(playerId);
+            }
         }
 
-        public IEnumerable<PlayerData> GetRemotePlayers()
+        /// <summary>
+        /// Returns a snapshot list of remote players (thread-safe).
+        /// </summary>
+        public List<PlayerData> GetRemotePlayersSnapshot()
         {
-            foreach (var player in players.Values)
+            lock (playerLock)
             {
-                if (!player.IsLocalPlayer)
-                    yield return player;
+                return players.Values.Where(p => !p.IsLocalPlayer).ToList();
             }
         }
 
@@ -117,14 +155,20 @@ namespace DyeWars.Player
 
         public void PredictLocalPosition(Vector2Int newPosition)
         {
-            if (localPlayer == null) return;
-            localPlayer.SetPosition(newPosition);
+            lock (playerLock)
+            {
+                if (localPlayer == null) return;
+                localPlayer.SetPosition(newPosition);
+            }
         }
 
         public void SetLocalFacing(int facing)
         {
-            if (localPlayer == null) return;
-            localPlayer.SetFacing(facing);
+            lock (playerLock)
+            {
+                if (localPlayer == null) return;
+                localPlayer.SetFacing(facing);
+            }
         }
 
         // ====================================================================
@@ -134,6 +178,7 @@ namespace DyeWars.Player
         /// <summary>
         /// Validates and clamps a position to grid bounds.
         /// Returns true if position was valid, false if it was clamped.
+        /// Note: Does not require lock as it only reads gridService.
         /// </summary>
         private bool ValidatePosition(ref Vector2Int position)
         {
@@ -154,91 +199,110 @@ namespace DyeWars.Player
 
         private void OnWelcomeReceived(WelcomeReceivedEvent evt)
         {
-            if (localPlayer != null)
-            {
-                Debug.LogWarning("PlayerRegistry: Local player already exists!");
-                return;
-            }
-
             var position = evt.Position;
             ValidatePosition(ref position);
 
-            Debug.Log($"PlayerRegistry: Creating local player with ID {evt.PlayerId} at {position} facing {evt.Facing}");
-            localPlayer = new PlayerData(evt.PlayerId, isLocalPlayer: true);
-            localPlayer.SetPosition(position);
-            localPlayer.SetFacing(evt.Facing);
-            players[evt.PlayerId] = localPlayer;
-            // Publish for other listeners (UI, etc.)
+            lock (playerLock)
+            {
+                if (localPlayer != null)
+                {
+                    Debug.LogWarning("PlayerRegistry: Local player already exists!");
+                    return;
+                }
+
+                Debug.Log($"PlayerRegistry: Creating local player with ID {evt.PlayerId} at {position} facing {evt.Facing}");
+                localPlayer = new PlayerData(evt.PlayerId, isLocalPlayer: true);
+                localPlayer.SetPosition(position);
+                localPlayer.SetFacing(evt.Facing);
+                players[evt.PlayerId] = localPlayer;
+            }
+
+            // Publish for other listeners (UI, etc.) - outside lock to prevent deadlock
             EventBus.Publish(new LocalPlayerIdAssignedEvent { PlayerId = evt.PlayerId }, this);
         }
 
         private void OnLocalPositionCorrected(LocalPlayerPositionCorrectedEvent evt)
         {
-            if (localPlayer == null) return;
-
             var position = evt.Position;
             ValidatePosition(ref position);
 
-            int dx = Mathf.Abs(localPlayer.Position.x - position.x);
-            int dy = Mathf.Abs(localPlayer.Position.y - position.y);
+            lock (playerLock)
+            {
+                if (localPlayer == null) return;
 
-            if (dx > 1 || dy > 1)
-                Debug.Log($"PlayerRegistry: Large correction, snapping to {position}");
-            else if (dx > 0 || dy > 0)
-                Debug.Log($"PlayerRegistry: Small correction to {position}");
+                int dx = Mathf.Abs(localPlayer.Position.x - position.x);
+                int dy = Mathf.Abs(localPlayer.Position.y - position.y);
 
-            localPlayer.SetPosition(position);
+                if (dx > 1 || dy > 1)
+                    Debug.Log($"PlayerRegistry: Large correction, snapping to {position}");
+                else if (dx > 0 || dy > 0)
+                    Debug.Log($"PlayerRegistry: Small correction to {position}");
+
+                localPlayer.SetPosition(position);
+            }
         }
 
         private void OnLocalFacingChanged(LocalPlayerFacingChangedEvent evt)
         {
-            if (localPlayer == null) return;
-            localPlayer.SetFacing(evt.Facing);
+            lock (playerLock)
+            {
+                if (localPlayer == null) return;
+                localPlayer.SetFacing(evt.Facing);
+            }
         }
 
         private void OnPlayerJoined(PlayerJoinedEvent evt)
         {
-            if (players.ContainsKey(evt.PlayerId))
-            {
-                Debug.LogWarning($"PlayerRegistry: Player {evt.PlayerId} already exists");
-                return;
-            }
-
             var position = evt.Position;
             ValidatePosition(ref position);
 
-            var player = new PlayerData(evt.PlayerId, isLocalPlayer: false);
-            player.SetPosition(position);
-            player.SetFacing(evt.Facing);
-            players[evt.PlayerId] = player;
+            lock (playerLock)
+            {
+                if (players.ContainsKey(evt.PlayerId))
+                {
+                    Debug.LogWarning($"PlayerRegistry: Player {evt.PlayerId} already exists");
+                    return;
+                }
 
-            Debug.Log($"PlayerRegistry: Remote player {evt.PlayerId} joined at {position}");
+                var player = new PlayerData(evt.PlayerId, isLocalPlayer: false);
+                player.SetPosition(position);
+                player.SetFacing(evt.Facing);
+                players[evt.PlayerId] = player;
+
+                Debug.Log($"PlayerRegistry: Remote player {evt.PlayerId} joined at {position}");
+            }
         }
 
         private void OnRemotePlayerUpdate(RemotePlayerUpdateEvent evt)
         {
-            // Skip our own updates
-            if (localPlayer != null && evt.PlayerId == localPlayer.PlayerId) return;
-
             var position = evt.Position;
             ValidatePosition(ref position);
 
-            if (!players.TryGetValue(evt.PlayerId, out var player))
+            lock (playerLock)
             {
-                // New remote player discovered via batch update
-                player = new PlayerData(evt.PlayerId, isLocalPlayer: false);
-                players[evt.PlayerId] = player;
-                Debug.Log($"PlayerRegistry: New remote player {evt.PlayerId} discovered");
-            }
+                // Skip our own updates
+                if (localPlayer != null && evt.PlayerId == localPlayer.PlayerId) return;
 
-            player.SetPosition(position);
-            player.SetFacing(evt.Facing);
+                if (!players.TryGetValue(evt.PlayerId, out var player))
+                {
+                    // New remote player discovered via batch update
+                    player = new PlayerData(evt.PlayerId, isLocalPlayer: false);
+                    players[evt.PlayerId] = player;
+                    Debug.Log($"PlayerRegistry: New remote player {evt.PlayerId} discovered");
+                }
+
+                player.SetPosition(position);
+                player.SetFacing(evt.Facing);
+            }
         }
 
         private void OnPlayerLeft(PlayerLeftEvent evt)
         {
-            if (players.Remove(evt.PlayerId))
-                Debug.Log("PlayerRegistry: Player " + evt.PlayerId + " removed");
+            lock (playerLock)
+            {
+                if (players.Remove(evt.PlayerId))
+                    Debug.Log("PlayerRegistry: Player " + evt.PlayerId + " removed");
+            }
         }
     }
 }

@@ -269,7 +269,7 @@ void GameServer::BroadcastDirtyPlayers(const std::vector<std::shared_ptr<Player>
         if (data.updates.empty()) continue;
 
         // Get connection directly - no need to look up player again
-        auto conn = clients_.GetClientCopy(client_id);
+        auto conn = clients_.GetClient(client_id);
         if (!conn) continue;
 
         // Build batch packet
@@ -359,7 +359,7 @@ void GameServer::OnClientLogin(const std::shared_ptr<ClientConnection> &client) 
         for (const auto &viewer : nearby_players) {
             if (viewer->GetID() == player->GetID()) continue;
 
-            auto viewer_conn = clients_.GetClientCopy(viewer->GetClientID());
+            auto viewer_conn = clients_.GetClient(viewer->GetClientID());
             if (!viewer_conn) continue;
 
             Packets::PacketSender::PlayerSpatial(
@@ -409,7 +409,7 @@ void GameServer::OnClientDisconnect(uint64_t client_id, const std::string &ip) {
             for (const auto &viewer: nearby_viewers) {
                 if (viewer->GetID() == player_id) continue;
 
-                auto viewer_conn = clients_.GetClientCopy(viewer->GetClientID());
+                auto viewer_conn = clients_.GetClient(viewer->GetClientID());
                 if (!viewer_conn) continue;
 
                 Packets::PacketSender::PlayerLeft(viewer_conn, player_id);

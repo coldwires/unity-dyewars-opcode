@@ -4,68 +4,36 @@
 #include <atomic>
 #include <memory>
 #include <vector>
+#include <deque>
 #include <unordered_set>
 #include "network/Packets/Protocol.h"
+#include "core/ThreadSafety.h"
 
 // Forward declaration to avoid circular dependency
 class GameServer;
 
-/// ============================================================================
-/// PING TRACKER
-///
-/// Maintains a rolling average of the last N ping samples.
-/// Used to smooth out network jitter and get a stable RTT value.
-///
-/// Example with SAMPLE_COUNT = 5:
-///   Record(50), Record(60), Record(55) -> Average = 55ms
-///   Record(100) -> Average = 66ms (smoothed, not spiking to 100)
-///
-/// Thread Safety Contract:
-///   - Record() MUST only be called from ONE thread (the IO thread)
-///   - Get() can be called from any thread (reads atomic average_)
-///   - The internal samples_/index_/filled_ are NOT atomic because they're
-///     only ever written by Record() on the IO thread
-///   - If you need to call Record() from multiple threads, add a mutex!
-/// ============================================================================
+/// Rolling average of last N ping samples.
+/// Record() from IO thread only, Get() from any thread.
 struct PingTracker {
-    static constexpr size_t SAMPLE_COUNT = 5;
+    static constexpr size_t MAX_SAMPLES = 5;
 
-    /// Add a new ping sample and recalculate average
     void Record(uint32_t ping_ms) {
-        // Store in circular buffer at current index
-        samples_[index_] = ping_ms;
+        ASSERT_SINGLE_THREADED(writer_thread_);
+        if (!writer_thread_.IsOwnerSet()) writer_thread_.SetOwner();
 
-        // Advance index, wrapping around when we hit the end
-        index_ = (index_ + 1) % SAMPLE_COUNT;
+        samples_.push_back(ping_ms);
+        if (samples_.size() > MAX_SAMPLES) samples_.pop_front();
 
-        // Track how many samples we've collected (caps at SAMPLE_COUNT)
-        if (filled_ < SAMPLE_COUNT) filled_++;
-
-        // Recalculate average from all filled samples
         uint32_t sum = 0;
-        for (size_t i = 0; i < filled_; i++) {
-            sum += samples_[i];
-        }
-        average_.store(sum / static_cast<uint32_t>(filled_));
+        for (uint32_t s : samples_) sum += s;
+        average_.store(sum / static_cast<uint32_t>(samples_.size()), std::memory_order_relaxed);
     }
 
-    /// Get the current averaged ping in milliseconds
-    uint32_t Get() const { return average_.load(); }
+    uint32_t Get() const { return average_.load(std::memory_order_relaxed); }
 
 private:
-    /// Circular buffer holding the last SAMPLE_COUNT ping values
-    /// Example: [50, 60, 55, 0, 0] with index_=3 means next write goes to slot 3
-    uint32_t samples_[SAMPLE_COUNT]{};
-
-    /// Current write position in the circular buffer (0 to SAMPLE_COUNT-1)
-    size_t index_{0};
-
-    /// How many samples have been recorded so far (0 to SAMPLE_COUNT)
-    /// Used to avoid averaging uninitialized zeros on startup
-    size_t filled_{0};
-
-    /// The calculated average, updated on each Record()
-    /// Atomic because it's written on IO thread and read on game thread
+    ThreadOwner writer_thread_;
+    std::deque<uint32_t> samples_;
     std::atomic<uint32_t> average_{0};
 };
 
@@ -79,9 +47,20 @@ private:
 /// - Read/write packets asynchronously via ASIO
 /// - Track ping for latency compensation
 ///
-/// Threading:
-/// - All socket I/O runs on the ASIO IO thread
-/// - Ping is written on IO thread, read on game thread (hence atomic)
+/// THREAD SAFETY:
+/// --------------
+/// This class is primarily used from the IO thread (ASIO callbacks).
+/// However, some data is accessed from other threads:
+///
+///   - client_id_: Immutable after construction, safe to read anywhere
+///   - client_ip_: Immutable after construction, safe to read anywhere
+///   - ping_sent_time_: Atomic, written by SendPing(), read by PacketHandler
+///   - ping_ (PingTracker): Thread-safe internally (atomic average)
+///   - disconnecting_: Atomic, used for double-disconnect prevention
+///
+/// The shared_ptr prevents use-after-free when connection is closed while
+/// game thread still holds a reference. Operations may fail (socket closed),
+/// but they won't crash.
 /// ============================================================================
 class ClientConnection : public std::enable_shared_from_this<ClientConnection> {
 public:
@@ -129,17 +108,44 @@ public:
     /// Get the averaged ping in milliseconds
     uint32_t GetPing() const { return ping_.Get(); }
 
-    /// Timestamp when last ping was sent (for RTT calculation)
-    /// Public because PacketHandler needs it when pong arrives
-    std::chrono::steady_clock::time_point ping_sent_time_{};
+    /// Get timestamp when last ping was sent (for RTT calculation).
+    /// Returns the time point atomically - safe to call from any thread.
+    ///
+    /// WHY THIS IS NEEDED:
+    /// When the client sends a pong back, PacketHandler (on IO thread) needs
+    /// to calculate RTT = now - ping_sent_time. If SendPing is setting
+    /// ping_sent_time while PacketHandler is reading it, we'd get a torn read.
+    ///
+    /// ALTERNATIVE APPROACHES:
+    /// 1. Include timestamp in ping packet, client echoes it back (no shared state)
+    /// 2. Use a mutex (overkill for one value)
+    /// 3. Make it atomic (what we do here)
+    ///
+    std::chrono::steady_clock::time_point GetPingSentTime() const {
+        return ping_sent_time_.load(std::memory_order_relaxed);
+    }
+
+    /// Set the ping sent timestamp. Called by SendPing() right before sending.
+    void SetPingSentTime(std::chrono::steady_clock::time_point time) {
+        ping_sent_time_.store(time, std::memory_order_relaxed);
+    }
 
     // =========================================================================
     // ACCESSORS
     // =========================================================================
 
+    /// Get unique client ID. Immutable after construction.
     uint64_t GetClientID() const { return client_id_; }
-    std::string GetClientIP() const { return client_ip_; }
-    std::string GetClientHostname() const { return client_hostname_; }
+
+    /// Get client IP address. Immutable after construction, safe from any thread.
+    /// WHY const std::string&: Returns reference to avoid copy, const because
+    /// the string itself never changes after construction.
+    const std::string& GetClientIP() const { return client_ip_; }
+
+    /// Get client hostname (currently same as IP, DNS lookup not implemented).
+    const std::string& GetClientHostname() const { return client_hostname_; }
+
+    /// Check if handshake completed successfully.
     bool IsHandshakeComplete() const { return handshake_complete_; }
 
 private:
@@ -182,26 +188,88 @@ private:
 
     // =========================================================================
     // DATA
+    //
+    // THREAD SAFETY NOTES:
+    // - IMMUTABLE: Safe to read from any thread without synchronization
+    // - ATOMIC: Use atomic operations (load/store) for access
+    // - IO_THREAD: Only accessed from ASIO IO thread callbacks
     // =========================================================================
 
-    // Back reference to server (non-owning, server outlives connections)
-    GameServer *server_;
+    /// Back reference to server (non-owning, server outlives connections)
+    /// IMMUTABLE: Set in constructor, never changes
+    GameServer* const server_;
 
-    // --- Network ---
+    // --- Network (IO_THREAD only) ---
     asio::ip::tcp::socket socket_;
     asio::steady_timer handshake_timer_;
     uint8_t header_buffer_[4]{};  // Reused buffer for reading packet headers
 
-    // --- Identity ---
-    uint64_t client_id_;
-    std::string client_ip_;
-    std::string client_hostname_;  // TODO: DNS lookup is slow, currently same as IP
+    // --- Identity (IMMUTABLE after construction) ---
+    /// Unique identifier for this connection/client.
+    /// WHY const: Set once in constructor, never changes. This makes it safe
+    /// to read from any thread without synchronization.
+    ///
+    /// WHY uint64_t: 32-bit would overflow after ~4 billion connections.
+    /// With 1000 connections/second, that's 50 days. uint64_t lasts forever.
+    const uint64_t client_id_;
 
-    // --- State ---
+    /// Client IP address (e.g., "192.168.1.100").
+    /// IMMUTABLE: Set in constructor from socket.remote_endpoint().
+    ///
+    /// WHY IMMUTABLE MATTERS FOR THREAD SAFETY:
+    /// An immutable value is inherently thread-safe because:
+    /// 1. No writes means no data races (races require at least one write)
+    /// 2. No synchronization needed for reads
+    /// 3. Can be safely cached in CPU cache without invalidation
+    ///
+    /// If we allowed changing IP (e.g., IP migration), we'd need a mutex.
+    const std::string client_ip_;
+
+    /// Client hostname (currently same as IP).
+    /// TODO: DNS reverse lookup is slow, would need async worker thread
+    const std::string client_hostname_;
+
+    // --- State (IO_THREAD primarily, with atomic for cross-thread) ---
+
+    /// True once handshake packet validated.
+    /// Only written from IO thread, but adding atomic just to be explicit.
     bool handshake_complete_ = false;
-    std::atomic<bool> disconnecting_{false};  // Prevents double-disconnect
-    uint8_t protocol_violations_{0};          // Strike count before kick
 
-    // --- Ping ---
+    /// Prevents double-disconnect from concurrent calls.
+    ///
+    /// WHY ATOMIC BOOL WITH compare_exchange:
+    /// Multiple code paths can trigger disconnect:
+    /// - Network error during read
+    /// - Handshake timeout
+    /// - Protocol violation
+    /// - Server shutdown
+    ///
+    /// Without atomics, two threads could both run disconnect logic,
+    /// causing double-cleanup (crash or corruption).
+    ///
+    /// compare_exchange_strong atomically checks "is it false?" and
+    /// sets it to true ONLY if it was false. Returns true if we won
+    /// the race, false if someone else already set it.
+    std::atomic<bool> disconnecting_{false};
+
+    /// Strike count before kick (too many bad packets = ban).
+    /// IO_THREAD only
+    uint8_t protocol_violations_{0};
+
+    // --- Ping (ATOMIC for cross-thread access) ---
+
+    /// Timestamp when we last sent a ping request.
+    /// ATOMIC because:
+    ///   - Written by SendPing() (called from timer, could be any thread)
+    ///   - Read by PacketHandler when pong arrives (IO thread)
+    ///
+    /// WHY std::atomic<time_point> WORKS:
+    /// std::chrono::steady_clock::time_point is typically 8 bytes (int64 nanoseconds).
+    /// C++20 std::atomic supports any trivially copyable type.
+    /// On 64-bit systems, this is usually lock-free (single instruction).
+    std::atomic<std::chrono::steady_clock::time_point> ping_sent_time_{};
+
+    /// Rolling average of recent ping samples.
+    /// Thread-safe internally (atomic average value).
     PingTracker ping_;
 };

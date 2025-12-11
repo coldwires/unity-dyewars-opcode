@@ -4,17 +4,23 @@ using UnityEngine;
 using UnityEngine.TestTools;
 using DyeWars.Core;
 using DyeWars.Player;
+using DyeWars.Game;
 
 public class PlayerRegistryPlayTests
 {
     private GameObject registryObject;
     private PlayerRegistry registry;
+    private GameObject gridServiceObject;
 
     [SetUp]
     public void SetUp()
     {
         EventBus.ClearAll();
         ServiceLocator.Clear();
+
+        // Create GridService first so PlayerRegistry.Start() can find it
+        gridServiceObject = new GameObject("GridService");
+        gridServiceObject.AddComponent<GridService>();
 
         registryObject = new GameObject("PlayerRegistry");
         registry = registryObject.AddComponent<PlayerRegistry>();
@@ -25,6 +31,9 @@ public class PlayerRegistryPlayTests
     {
         if (registryObject != null)
             Object.Destroy(registryObject);
+
+        if (gridServiceObject != null)
+            Object.Destroy(gridServiceObject);
 
         EventBus.ClearAll();
         ServiceLocator.Clear();
@@ -150,16 +159,16 @@ public class PlayerRegistryPlayTests
         EventBus.Publish(new WelcomeReceivedEvent { PlayerId = 1, Position = Vector2Int.zero, Facing = Direction.Down });
         EventBus.Publish(new RemotePlayerUpdateEvent { PlayerId = 50, Position = new Vector2Int(0, 0), Facing = Direction.Down });
 
-        // Update same player
+        // Update same player (use position within default 10x10 grid bounds)
         EventBus.Publish(new RemotePlayerUpdateEvent
         {
             PlayerId = 50,
-            Position = new Vector2Int(10, 10),
+            Position = new Vector2Int(5, 5),
             Facing = Direction.Down
         });
 
         Assert.AreEqual(2, registry.PlayerCount); // Still 2, not 3
-        Assert.AreEqual(new Vector2Int(10, 10), registry.GetPlayer(50).Position);
+        Assert.AreEqual(new Vector2Int(5, 5), registry.GetPlayer(50).Position);
     }
 
     [UnityTest]
@@ -230,12 +239,13 @@ public class PlayerRegistryPlayTests
             Facing = Direction.Down
         });
 
+        // Use position within default 10x10 grid bounds (0-9)
         EventBus.Publish(new LocalPlayerPositionCorrectedEvent
         {
-            Position = new Vector2Int(10, 20)
+            Position = new Vector2Int(7, 8)
         });
 
-        Assert.AreEqual(new Vector2Int(10, 20), registry.LocalPlayer.Position);
+        Assert.AreEqual(new Vector2Int(7, 8), registry.LocalPlayer.Position);
     }
 
     [UnityTest]
@@ -337,7 +347,7 @@ public class PlayerRegistryPlayTests
         EventBus.Publish(new RemotePlayerUpdateEvent { PlayerId = 20, Position = Vector2Int.zero, Facing = Direction.Down });
 
         int remoteCount = 0;
-        foreach (var player in registry.GetRemotePlayers())
+        foreach (var player in registry.GetRemotePlayersSnapshot())
         {
             Assert.IsFalse(player.IsLocalPlayer);
             remoteCount++;

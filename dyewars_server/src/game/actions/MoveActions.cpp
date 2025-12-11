@@ -10,7 +10,7 @@ namespace Actions::Movement {
             if (!player) return;
 
             // Get client connection once - used for ping and potential correction
-            auto conn = server->Clients().GetClientCopy(client_id);
+            auto conn = server->Clients().GetClient(client_id);
             uint32_t ping_ms = conn ? conn->GetPing() : 0;
 
             // Occupancy check: is another player at (x, y)?
@@ -73,7 +73,7 @@ namespace Actions::Movement {
                     auto observer = server->GetWorld().GetPlayer(observer_id);
                     if (!observer) continue;
 
-                    auto observer_conn = server->Clients().GetClientCopy(observer->GetClientID());
+                    auto observer_conn = server->Clients().GetClient(observer->GetClientID());
                     if (!observer_conn) continue;
 
                     Packets::PacketSender::PlayerLeft(observer_conn, player_id);

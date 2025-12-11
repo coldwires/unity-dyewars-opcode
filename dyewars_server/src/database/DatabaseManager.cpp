@@ -87,22 +87,56 @@ void DatabaseManager::StopWriteQueue() {
     if (write_thread_.joinable()) write_thread_.join();
 }
 
+/// Process the write queue on a background thread.
+///
+/// THREAD SAFETY:
+/// This runs on its own dedicated thread (write_thread_).
+/// Uses mutex + condition variable for synchronization.
+///
+/// WHY PREDICATE WAIT:
+/// The wait() with a predicate (lambda) is ESSENTIAL for correctness.
+/// Without it, we'd be vulnerable to spurious wakeups:
+///
+/// BAD (vulnerable to spurious wakeup):
+///   queue_cv_.wait(lock);  // Might wake up even when queue is empty!
+///
+/// GOOD (what we use):
+///   queue_cv_.wait(lock, [this] { return !write_queue_.empty() || stop_queue_; });
+///   // Re-checks condition after EVERY wakeup, whether real or spurious
+///
+/// SPURIOUS WAKEUPS EXPLAINED:
+/// A condition variable can wake up even when no notify was called.
+/// This is allowed by POSIX and happens on some systems due to:
+/// - Kernel implementation details
+/// - Signal handling
+/// - Multi-core memory visibility
+///
+/// The predicate form handles this by looping internally until the
+/// condition is actually true.
+///
 void DatabaseManager::ProcessWriteQueue() {
     while (!stop_queue_) {
         std::function < void() > task;
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
+
+            // Wait until: queue has work OR we're shutting down
+            // The predicate handles spurious wakeups automatically
             queue_cv_.wait(lock, [this] { return !write_queue_.empty() || stop_queue_; });
 
+            // Double-check: if shutting down and queue empty, exit
             if (stop_queue_ && write_queue_.empty()) break;
 
+            // Move task out of queue while holding lock
             task = std::move(write_queue_.front());
             write_queue_.pop();
         }
+        // Execute task WITHOUT holding lock (allows new items to be queued)
         if (task) task();
     }
 
     // Flush remaining writes on shutdown
+    // This ensures all pending saves complete before destructor finishes
     std::lock_guard<std::mutex> lock(queue_mutex_);
     while (!write_queue_.empty()) {
         write_queue_.front()();

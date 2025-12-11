@@ -7,26 +7,17 @@
 
 class ClientConnection;
 
+/// Manages all active client connections.
+/// Thread-safe: all methods acquire mutex internally.
 class ClientManager {
 public:
-    /// <summary>
-    /// adds client to client list
-    /// </summary>
     void AddClient(const std::shared_ptr<ClientConnection> &client);
-
-    /// <summary>
-    /// Removes client
-    /// </summary>
     void RemoveClient(uint64_t client_id);
-
-    /// <summary>
-    /// Close all client sockets
-    /// </summary>
     void CloseAll();
 
-    std::shared_ptr<ClientConnection> GetClientCopy(uint64_t client_id);
-
-    ClientConnection *GetClientPtr(uint64_t id);
+    /// Get client by ID. Returns nullptr if not found.
+    /// Returns shared_ptr for safe cross-thread access.
+    std::shared_ptr<ClientConnection> GetClient(uint64_t client_id);
 
     void BroadcastToOthers(uint64_t exclude_id,
                            const std::function<void(const std::shared_ptr<ClientConnection> &)> &action);

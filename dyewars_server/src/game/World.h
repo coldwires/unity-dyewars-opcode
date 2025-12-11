@@ -4,8 +4,19 @@
 /// Owns all world data:
 /// - TileMap: static tile data (terrain, walls)
 /// - SpatialHash: dynamic entity positions (players, NPCs)
+/// - VisibilityTracker: who can see whom
 ///
 /// Single point of access for all spatial queries.
+///
+/// THREAD SAFETY:
+/// --------------
+/// This class is ONLY accessed from the game thread.
+/// Child components (SpatialHash, VisibilityTracker) have their own
+/// thread safety assertions that will catch violations.
+///
+/// TileMap is READ-ONLY after construction, so it's inherently thread-safe.
+/// If you ever add tile modification (e.g., destructible terrain), you'll
+/// need to add synchronization.
 ///
 /// Created by Anonymous on Dec 07, 2025
 /// =======================================
@@ -19,6 +30,7 @@
 #include "TileMap.h"
 #include "SpatialHash.h"
 #include "VisibilityTracker.h"
+#include "core/ThreadSafety.h"
 
 class Player;  // Forward declare
 

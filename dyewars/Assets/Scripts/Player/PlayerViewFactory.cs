@@ -1,9 +1,11 @@
-﻿// PlayerViewFactory.cs
+// PlayerViewFactory.cs
 // Factory for creating player GameObjects (local and remote).
 // Subscribes to EventBus events published by PacketHandler.
 //
 // Single responsibility: instantiate and destroy player visuals.
 // The actual visual logic lives in PlayerView.
+//
+// Thread Safety: Uses viewLock for dictionary access.
 
 using System.Collections.Generic;
 using UnityEngine;
@@ -17,6 +19,10 @@ namespace DyeWars.Player
         [Header("Prefabs")]
         [SerializeField] private GameObject localPlayerPrefab;
         [SerializeField] private GameObject remotePlayerPrefab;
+
+        // Thread Safety: Protects remotePlayerViews dictionary.
+        // Multiple EventBus handlers (PlayerJoined, PlayerLeft, RemotePlayerUpdate) access this dictionary.
+        private readonly object viewLock = new object();
 
         // Track created views for cleanup
         private GameObject localPlayerView;
@@ -88,20 +94,23 @@ namespace DyeWars.Player
             if (playerRegistry?.LocalPlayer != null && evt.PlayerId == playerRegistry.LocalPlayer.PlayerId)
                 return;
 
-            // Create view if it does not exist
-            if (!remotePlayerViews.ContainsKey(evt.PlayerId))
+            lock (viewLock)
             {
-                CreateRemotePlayerView(evt.PlayerId, evt.Position, evt.Facing);
-                return;
-            }
-
-            // Update existing view
-            if (remotePlayerViews.TryGetValue(evt.PlayerId, out var playerObj))
-            {
-                var view = playerObj.GetComponent<PlayerView>();
-                if (view != null)
+                // Create view if it does not exist
+                if (!remotePlayerViews.ContainsKey(evt.PlayerId))
                 {
-                    view.UpdateFromServer(evt.Position, evt.Facing);
+                    CreateRemotePlayerViewInternal(evt.PlayerId, evt.Position, evt.Facing);
+                    return;
+                }
+
+                // Update existing view
+                if (remotePlayerViews.TryGetValue(evt.PlayerId, out var playerObj))
+                {
+                    var view = playerObj.GetComponent<PlayerView>();
+                    if (view != null)
+                    {
+                        view.UpdateFromServer(evt.Position, evt.Facing);
+                    }
                 }
             }
         }
@@ -112,40 +121,52 @@ namespace DyeWars.Player
 
         private void CreateLocalPlayerView(ulong playerId, Vector2Int position, int facing)
         {
-            if (localPlayerView != null)
+            lock (viewLock)
             {
-                Debug.LogWarning("PlayerViewFactory: Local player already exists!");
-                return;
+                if (localPlayerView != null)
+                {
+                    Debug.LogWarning("PlayerViewFactory: Local player already exists!");
+                    return;
+                }
+
+                if (localPlayerPrefab == null)
+                {
+                    Debug.LogError("PlayerViewFactory: Local player prefab not assigned!");
+                    return;
+                }
+
+                Vector3 worldPos = gridService != null ? gridService.GridToWorld(position) : Vector3.zero;
+
+                localPlayerView = Instantiate(localPlayerPrefab, worldPos, Quaternion.identity);
+                localPlayerView.name = "LocalPlayer_" + playerId;
+
+                var view = localPlayerView.GetComponent<PlayerView>();
+                if (view != null)
+                {
+                    view.InitializeAsLocalPlayer();
+                    view.SetFacing(facing);
+                }
+
+                var controller = localPlayerView.GetComponent<LocalPlayerController>();
+                if (controller != null)
+                {
+                    controller.Initialize(position, facing);
+                }
+
+                Debug.Log($"PlayerViewFactory: Created local player view for {playerId} at {position}");
             }
-
-            if (localPlayerPrefab == null)
-            {
-                Debug.LogError("PlayerViewFactory: Local player prefab not assigned!");
-                return;
-            }
-
-            Vector3 worldPos = gridService != null ? gridService.GridToWorld(position) : Vector3.zero;
-
-            localPlayerView = Instantiate(localPlayerPrefab, worldPos, Quaternion.identity);
-            localPlayerView.name = "LocalPlayer_" + playerId;
-
-            var view = localPlayerView.GetComponent<PlayerView>();
-            if (view != null)
-            {
-                view.InitializeAsLocalPlayer();
-                view.SetFacing(facing);
-            }
-
-            var controller = localPlayerView.GetComponent<LocalPlayerController>();
-            if (controller != null)
-            {
-                controller.Initialize(position, facing);
-            }
-
-            Debug.Log($"PlayerViewFactory: Created local player view for {playerId} at {position}");
         }
 
         private void CreateRemotePlayerView(ulong playerId, Vector2Int position, int facing)
+        {
+            lock (viewLock)
+            {
+                CreateRemotePlayerViewInternal(playerId, position, facing);
+            }
+        }
+
+        // Internal method - caller must hold viewLock
+        private void CreateRemotePlayerViewInternal(ulong playerId, Vector2Int position, int facing)
         {
             if (remotePlayerPrefab == null)
             {
@@ -177,11 +198,14 @@ namespace DyeWars.Player
 
         private void DestroyPlayerView(ulong playerId)
         {
-            if (remotePlayerViews.TryGetValue(playerId, out var playerObj))
+            lock (viewLock)
             {
-                Destroy(playerObj);
-                remotePlayerViews.Remove(playerId);
-                Debug.Log("PlayerViewFactory: Destroyed remote player view for " + playerId);
+                if (remotePlayerViews.TryGetValue(playerId, out var playerObj))
+                {
+                    Destroy(playerObj);
+                    remotePlayerViews.Remove(playerId);
+                    Debug.Log("PlayerViewFactory: Destroyed remote player view for " + playerId);
+                }
             }
         }
 
@@ -191,22 +215,37 @@ namespace DyeWars.Player
 
         private void DestroyAllViews()
         {
-            if (localPlayerView != null)
+            lock (viewLock)
             {
-                Destroy(localPlayerView);
-                localPlayerView = null;
-            }
+                if (localPlayerView != null)
+                {
+                    Destroy(localPlayerView);
+                    localPlayerView = null;
+                }
 
-            foreach (var kvp in remotePlayerViews)
-            {
-                if (kvp.Value != null)
-                    Destroy(kvp.Value);
+                foreach (var kvp in remotePlayerViews)
+                {
+                    if (kvp.Value != null)
+                        Destroy(kvp.Value);
+                }
+                remotePlayerViews.Clear();
             }
-            remotePlayerViews.Clear();
         }
 
-        public GameObject GetLocalPlayerObject() => localPlayerView;
-        public GameObject GetRemotePlayerObject(ulong playerId) => 
-            remotePlayerViews.TryGetValue(playerId, out var obj) ? obj : null;
+        public GameObject GetLocalPlayerObject()
+        {
+            lock (viewLock)
+            {
+                return localPlayerView;
+            }
+        }
+
+        public GameObject GetRemotePlayerObject(ulong playerId)
+        {
+            lock (viewLock)
+            {
+                return remotePlayerViews.TryGetValue(playerId, out var obj) ? obj : null;
+            }
+        }
     }
 }

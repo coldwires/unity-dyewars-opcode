@@ -9,20 +9,49 @@
 
 using namespace Protocol::Opcode;
 
+/// Helper function to safely extract IP from socket.
+/// Called during member initialization before constructor body runs.
+///
+/// WHY A HELPER FUNCTION:
+/// We want client_ip_ to be const (immutable) for thread safety.
+/// Const members MUST be initialized in the member initializer list,
+/// not in the constructor body. But getting the IP can throw exceptions.
+///
+/// Solution: A helper function that catches exceptions and returns a default.
+///
+/// ALTERNATIVE APPROACHES:
+/// 1. Make client_ip_ non-const, set in body (loses thread safety)
+/// 2. Use std::optional<std::string> (adds complexity)
+/// 3. Use a helper function (what we do - simple and safe)
+///
+static std::string ExtractClientIP(asio::ip::tcp::socket& socket) {
+    try {
+        return socket.remote_endpoint().address().to_string();
+    } catch (...) {
+        // Socket might already be closed or in error state
+        return "unknown";
+    }
+}
+
 ClientConnection::ClientConnection(asio::ip::tcp::socket socket,
                                    GameServer *server,
                                    const uint64_t client_id)
-    : socket_(std::move(socket)),
-      handshake_timer_(socket_.get_executor()),
-      client_id_(client_id), server_(server) {
-    try {
-        client_ip_ = socket_.remote_endpoint().address().to_string();
-        // TODO DNS lookup is slow, move to worker thread
-        client_hostname_ = client_ip_;
-    } catch (...) {
-        client_ip_ = "unknown";
-        client_hostname_ = "unknown";
-    }
+    // MEMBER INITIALIZER LIST ORDER:
+    // Members are initialized in the order they're DECLARED in the class,
+    // NOT the order they appear in the initializer list. The compiler will
+    // warn if these don't match. We list them in declaration order for clarity.
+    : server_(server),                           // First: back-reference to server
+      socket_(std::move(socket)),                // Second: take ownership of socket
+      handshake_timer_(socket_.get_executor()),  // Third: timer using socket's executor
+      client_id_(client_id),                     // Fourth: immutable client ID
+      client_ip_(ExtractClientIP(socket_)),      // Fifth: immutable IP (must use helper for const)
+      client_hostname_(client_ip_)               // Sixth: hostname = IP for now
+{
+    // Constructor body is empty because all initialization is done in the
+    // member initializer list. This is the preferred style for const members.
+    //
+    // TODO: DNS reverse lookup for hostname. This is slow (network call),
+    // so it would need to be done asynchronously on a worker thread.
 }
 
 ClientConnection::~ClientConnection() {
@@ -352,12 +381,17 @@ void ClientConnection::HandleProtocolViolation() {
 }
 
 void ClientConnection::SendPing() {
-    ping_sent_time_ = std::chrono::steady_clock::now();
+    // Record when we're sending this ping (used to calculate RTT when pong arrives)
+    // Use the atomic setter for thread safety
+    auto now = std::chrono::steady_clock::now();
+    SetPingSentTime(now);
 
     // Send timestamp so client can echo it back
+    // We truncate to 32 bits (milliseconds) which wraps every ~49 days
+    // This is fine because we only care about the RTT (usually < 1 second)
     auto timestamp = static_cast<uint32_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
-            ping_sent_time_.time_since_epoch()
+            now.time_since_epoch()
         ).count() & 0xFFFFFFFF
     );
 

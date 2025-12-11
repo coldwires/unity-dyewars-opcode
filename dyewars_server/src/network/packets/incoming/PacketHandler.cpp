@@ -75,13 +75,24 @@ namespace PacketHandler {
             }
 
             case Protocol::Opcode::Connection::Client::C_Pong_Response.op: {
-                // Client responded to our ping - calculate RTT
+                // Client responded to our ping - calculate RTT (Round Trip Time)
+                //
+                // RTT = now - time_when_ping_was_sent
+                //
+                // We use the atomic getter because:
+                // - SendPing() writes ping_sent_time_ (possibly from timer thread)
+                // - We're reading it here (IO thread)
+                // - Without atomics, we could get a torn read (half-updated timestamp)
+                //
                 auto now = std::chrono::steady_clock::now();
+                auto ping_sent = client->GetPingSentTime();
                 auto rtt = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    now - client->ping_sent_time_
+                    now - ping_sent
                 ).count();
 
                 // Clamp to reasonable values
+                // Negative RTT could happen if clock skew or ping_sent wasn't set properly
+                // Very high RTT (>5s) is likely a stale ping response after reconnect
                 if (rtt < 0) rtt = 0;
                 if (rtt > 5000) rtt = 5000;
 

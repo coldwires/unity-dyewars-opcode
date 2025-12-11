@@ -1,10 +1,12 @@
-﻿// ServiceLocator.cs
+// ServiceLocator.cs
 // A simple service locator pattern that lets any class get references to services
 // without using FindObjectOfType (which is slow) or tight coupling.
 //
 // Usage:
 //   ServiceLocator.Register<INetworkService>(networkService);
 //   var network = ServiceLocator.Get<INetworkService>();
+//
+// Thread Safety: All operations are synchronized with a lock.
 
 using System;
 using System.Collections.Generic;
@@ -12,6 +14,11 @@ using UnityEngine;
 
 public static class ServiceLocator
 {
+    // Thread Safety: Protects dictionary from concurrent Register/Get/Unregister calls.
+    // Static dictionaries are shared across all threads - without a lock, two threads
+    // calling Register simultaneously could corrupt the dictionary's internal state.
+    private static readonly object serviceLock = new object();
+
     // Dictionary storing all registered services, keyed by their type
     private static readonly Dictionary<Type, object> services = new Dictionary<Type, object>();
 
@@ -21,13 +28,17 @@ public static class ServiceLocator
     public static void Register<T>(T service) where T : class
     {
         var type = typeof(T);
-        
-        if (services.ContainsKey(type))
+
+        lock (serviceLock)
         {
-            Debug.LogWarning($"ServiceLocator: Overwriting existing service of type {type.Name}");
+            if (services.ContainsKey(type))
+            {
+                Debug.LogWarning($"ServiceLocator: Overwriting existing service of type {type.Name}");
+            }
+
+            services[type] = service;
         }
-        
-        services[type] = service;
+
         Debug.Log($"ServiceLocator: Registered {type.Name}");
     }
 
@@ -37,12 +48,15 @@ public static class ServiceLocator
     public static T Get<T>() where T : class
     {
         var type = typeof(T);
-        
-        if (services.TryGetValue(type, out var service))
+
+        lock (serviceLock)
         {
-            return service as T;
+            if (services.TryGetValue(type, out var service))
+            {
+                return service as T;
+            }
         }
-        
+
         Debug.LogError($"ServiceLocator: Service of type {type.Name} not found!");
         return null;
     }
@@ -52,7 +66,10 @@ public static class ServiceLocator
     /// </summary>
     public static bool Has<T>() where T : class
     {
-        return services.ContainsKey(typeof(T));
+        lock (serviceLock)
+        {
+            return services.ContainsKey(typeof(T));
+        }
     }
 
     /// <summary>
@@ -61,8 +78,14 @@ public static class ServiceLocator
     public static void Unregister<T>() where T : class
     {
         var type = typeof(T);
-        
-        if (services.Remove(type))
+        bool removed;
+
+        lock (serviceLock)
+        {
+            removed = services.Remove(type);
+        }
+
+        if (removed)
         {
             Debug.Log($"ServiceLocator: Unregistered {type.Name}");
         }
@@ -73,7 +96,11 @@ public static class ServiceLocator
     /// </summary>
     public static void Clear()
     {
-        services.Clear();
+        lock (serviceLock)
+        {
+            services.Clear();
+        }
+
         Debug.Log("ServiceLocator: Cleared all services");
     }
 }

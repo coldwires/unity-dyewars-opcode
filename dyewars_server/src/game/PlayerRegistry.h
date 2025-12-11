@@ -246,50 +246,30 @@ private:
     /// INTERNAL
     /// ========================================================================
 
-    /// Generate a unique player ID
+    /// Generate a unique player ID.
+    /// With 64-bit random IDs, collision probability is ~1 in 10^19.
+    /// The retry loop is purely defensive - it will never execute in practice.
     uint64_t GenerateUniqueID() {
         std::lock_guard lock(mutex_);
-
-        for (int attempts = 0; attempts < 100; attempts++) {
-            uint64_t id = id_dist_(rng_);
-            if (!players_.contains(id)) {
-                return id;
-            }
+        uint64_t id = id_dist_(rng_);
+        while (players_.contains(id)) {
+            id = id_dist_(rng_);  // Astronomically unlikely to ever run
         }
-
-        // Fallback: find next available sequential ID
-        for (int attempts = 0; attempts < 100; attempts++) {
-            uint64_t id = next_fallback_id_++;
-            if (!players_.contains(id)) {
-                return id;
-            }
-        }
-        assert(false && "Failed to generate Player ID");
-        return 0;
+        return id;
     }
 
     // ========================================================================
     /// DATA
     /// ========================================================================
 
-    /// Player storage: player_id -> Player
     std::unordered_map<uint64_t, std::shared_ptr<Player>> players_;
-
-    /// Client mapping: client_id -> player_id
     std::unordered_map<uint64_t, uint64_t> client_to_player_;
-
-    /// Reverse mapping: player_id -> client_id (for O(1) removal by player_id)
     std::unordered_map<uint64_t, uint64_t> player_to_client_;
-
-    /// Dirty players: need broadcast this tick
     std::unordered_set<std::shared_ptr<Player>> dirty_players_;
 
-    /// Thread safety
     mutable std::mutex mutex_;
 
-    /// ID generation
     std::mt19937_64 rng_{std::random_device{}()};
     std::uniform_int_distribution<uint64_t> id_dist_{1, UINT64_MAX - 1};
-    uint64_t next_fallback_id_{1};
 };
 

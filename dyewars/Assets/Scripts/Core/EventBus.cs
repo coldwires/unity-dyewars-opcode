@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using UnityEngine;
@@ -6,6 +6,10 @@ using Debug = UnityEngine.Debug;
 
 public static class EventBus
 {
+    // Thread Safety: Single lock protects all dictionary access.
+    // Without this, Subscribe/Unsubscribe could modify dictionaries while Publish iterates them.
+    private static readonly object subscriberLock = new object();
+
     private static Dictionary<Type, object> channels = new();
     private static Dictionary<Type, List<ListenerInfo>> listenerInfos = new();
     private static Dictionary<Type, int> publishCounts = new();
@@ -44,47 +48,53 @@ public static class EventBus
     {
         var type = typeof(T);
 
-        if (!channels.ContainsKey(type))
+        lock (subscriberLock)
         {
-            channels[type] = new List<Action<T>>();
-            listenerInfos[type] = new List<ListenerInfo>();
-            publishCounts[type] = 0;
-            recentPublishers[type] = new List<PublishInfo>();
-        }
+            if (!channels.ContainsKey(type))
+            {
+                channels[type] = new List<Action<T>>();
+                listenerInfos[type] = new List<ListenerInfo>();
+                publishCounts[type] = 0;
+                recentPublishers[type] = new List<PublishInfo>();
+            }
 
-        ((List<Action<T>>)channels[type]).Add(listener);
+            ((List<Action<T>>)channels[type]).Add(listener);
 
-        var info = new ListenerInfo { methodName = listener.Method.Name };
+            var info = new ListenerInfo { methodName = listener.Method.Name };
 
-        if (listener.Target is MonoBehaviour mb)
-        {
-            info.gameObjectName = mb.gameObject.name;
-            info.componentType = mb.GetType().Name;
-        }
-        else if (listener.Target != null)
-        {
-            info.gameObjectName = "(no GameObject)";
-            info.componentType = listener.Target.GetType().Name;
-        }
-        else
-        {
-            info.gameObjectName = "(static)";
-            info.componentType = "";
-        }
+            if (listener.Target is MonoBehaviour mb)
+            {
+                info.gameObjectName = mb.gameObject.name;
+                info.componentType = mb.GetType().Name;
+            }
+            else if (listener.Target != null)
+            {
+                info.gameObjectName = "(no GameObject)";
+                info.componentType = listener.Target.GetType().Name;
+            }
+            else
+            {
+                info.gameObjectName = "(static)";
+                info.componentType = "";
+            }
 
-        listenerInfos[type].Add(info);
+            listenerInfos[type].Add(info);
+        }
     }
 
     public static void Unsubscribe<T>(Action<T> listener) where T : struct
     {
         var type = typeof(T);
-        if (channels.TryGetValue(type, out var list))
+        lock (subscriberLock)
         {
-            var index = ((List<Action<T>>)list).IndexOf(listener);
-            if (index >= 0)
+            if (channels.TryGetValue(type, out var list))
             {
-                ((List<Action<T>>)list).RemoveAt(index);
-                listenerInfos[type].RemoveAt(index);
+                var index = ((List<Action<T>>)list).IndexOf(listener);
+                if (index >= 0)
+                {
+                    ((List<Action<T>>)list).RemoveAt(index);
+                    listenerInfos[type].RemoveAt(index);
+                }
             }
         }
     }
@@ -122,53 +132,70 @@ public static class EventBus
     {
         var type = typeof(T);
 
-        if (!recentPublishers.ContainsKey(type))
-            recentPublishers[type] = new List<PublishInfo>();
-
-        var list = recentPublishers[type];
-        var key = $"{goName}_{compType}_{method}";
-
-        var existing = list.Find(p => p.Key == key);
-
-        if (existing != null)
+        lock (subscriberLock)
         {
-            existing.count++;
-            existing.timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
-        }
-        else
-        {
-            list.Add(new PublishInfo
+            if (!recentPublishers.ContainsKey(type))
+                recentPublishers[type] = new List<PublishInfo>();
+
+            var list = recentPublishers[type];
+            var key = $"{goName}_{compType}_{method}";
+
+            var existing = list.Find(p => p.Key == key);
+
+            if (existing != null)
             {
-                timestamp = DateTime.Now.ToString("HH:mm:ss.fff"),
-                gameObjectName = goName,
-                componentType = compType,
-                methodName = method,
-                count = 1
-            });
+                existing.count++;
+                existing.timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
+            }
+            else
+            {
+                list.Add(new PublishInfo
+                {
+                    timestamp = DateTime.Now.ToString("HH:mm:ss.fff"),
+                    gameObjectName = goName,
+                    componentType = compType,
+                    methodName = method,
+                    count = 1
+                });
 
-            if (list.Count > 10)
-                list.RemoveAt(0);
+                if (list.Count > 10)
+                    list.RemoveAt(0);
+            }
         }
     }
 
     private static void PublishInternal<T>(T data) where T : struct
     {
         var type = typeof(T);
+        Action<T>[] listenersCopy = null;
 
-        if (!publishCounts.ContainsKey(type))
-            publishCounts[type] = 0;
-
-        lastPublished[type] = data;
-        publishCounts[type]++;
-
-        if (channels.TryGetValue(type, out var list))
+        // CRITICAL PATTERN: Copy listeners inside lock, invoke outside lock.
+        // Why? If we held the lock while invoking, and a listener tried to Subscribe/Unsubscribe,
+        // it would deadlock (listener waiting for lock we hold, us waiting for listener to return).
+        lock (subscriberLock)
         {
-            var listeners = (List<Action<T>>)list;
-            for (int i = listeners.Count - 1; i >= 0; i--)
+            if (!publishCounts.ContainsKey(type))
+                publishCounts[type] = 0;
+
+            lastPublished[type] = data;
+            publishCounts[type]++;
+
+            if (channels.TryGetValue(type, out var list))
+            {
+                var listeners = (List<Action<T>>)list;
+                // ToArray() creates a snapshot - safe to iterate even if original list changes
+                listenersCopy = listeners.ToArray();
+            }
+        } // Lock released BEFORE invoking listeners
+
+        // Safe to invoke without lock - we're iterating our private copy
+        if (listenersCopy != null)
+        {
+            for (int i = listenersCopy.Length - 1; i >= 0; i--)
             {
                 try
                 {
-                    listeners[i]?.Invoke(data);
+                    listenersCopy[i]?.Invoke(data);
                 }
                 catch (Exception ex)
                 {
@@ -179,27 +206,67 @@ public static class EventBus
     }
 
     // Debug API
-    public static List<Type> GetRegisteredTypes() => new(channels.Keys);
-    public static List<ListenerInfo> GetListenerInfosForType(Type t) => listenerInfos.GetValueOrDefault(t) ?? new();
-    public static List<PublishInfo> GetPublishersForType(Type t) => recentPublishers.GetValueOrDefault(t) ?? new();
-    public static int GetPublishCountForType(Type t) => publishCounts.GetValueOrDefault(t);
-    public static object GetLastPublishedForType(Type t) => lastPublished.GetValueOrDefault(t);
+    public static List<Type> GetRegisteredTypes()
+    {
+        lock (subscriberLock)
+        {
+            return new List<Type>(channels.Keys);
+        }
+    }
+
+    public static List<ListenerInfo> GetListenerInfosForType(Type t)
+    {
+        lock (subscriberLock)
+        {
+            return listenerInfos.TryGetValue(t, out var list) ? new List<ListenerInfo>(list) : new List<ListenerInfo>();
+        }
+    }
+
+    public static List<PublishInfo> GetPublishersForType(Type t)
+    {
+        lock (subscriberLock)
+        {
+            return recentPublishers.TryGetValue(t, out var list) ? new List<PublishInfo>(list) : new List<PublishInfo>();
+        }
+    }
+
+    public static int GetPublishCountForType(Type t)
+    {
+        lock (subscriberLock)
+        {
+            return publishCounts.GetValueOrDefault(t);
+        }
+    }
+
+    public static object GetLastPublishedForType(Type t)
+    {
+        lock (subscriberLock)
+        {
+            return lastPublished.GetValueOrDefault(t);
+        }
+    }
 
     public static void ClearAllStats()
     {
-        var types = new List<Type>(publishCounts.Keys);
-        foreach (var type in types)
-            publishCounts[type] = 0;
-        lastPublished.Clear();
-        recentPublishers.Clear();
+        lock (subscriberLock)
+        {
+            var types = new List<Type>(publishCounts.Keys);
+            foreach (var type in types)
+                publishCounts[type] = 0;
+            lastPublished.Clear();
+            recentPublishers.Clear();
+        }
     }
 
     public static void ClearAll()
     {
-        channels.Clear();
-        listenerInfos.Clear();
-        publishCounts.Clear();
-        lastPublished.Clear();
-        recentPublishers.Clear();
+        lock (subscriberLock)
+        {
+            channels.Clear();
+            listenerInfos.Clear();
+            publishCounts.Clear();
+            lastPublished.Clear();
+            recentPublishers.Clear();
+        }
     }
 }

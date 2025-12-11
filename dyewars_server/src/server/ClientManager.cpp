@@ -24,7 +24,7 @@ void ClientManager::RemoveClient(uint64_t client_id) {
     if (removed) Log::Debug("Client {} removed from manager", client_id);
 }
 
-std::shared_ptr<ClientConnection> ClientManager::GetClientCopy(uint64_t client_id) {
+std::shared_ptr<ClientConnection> ClientManager::GetClient(uint64_t client_id) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = clients_.find(client_id);
     return it != clients_.end() ? it->second : nullptr;

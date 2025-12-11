@@ -5,6 +5,21 @@
 /// Divides the world into grid cells. Each cell tracks which entities are in it.
 /// Used by World for efficient "who's nearby" queries.
 ///
+/// THREAD SAFETY:
+/// --------------
+/// This class is ONLY accessed from the game thread.
+/// In debug builds, we verify this with ThreadOwner assertions.
+///
+/// WHY GAME-THREAD ONLY:
+/// The spatial hash uses nested data structures (maps of sets).
+/// Concurrent access would require complex locking and could cause:
+/// - Iterator invalidation during iteration
+/// - Torn reads of multi-step operations
+/// - Deadlocks with nested lock acquisition
+///
+/// Since all spatial updates (player movement, spawn, despawn) happen
+/// during the game loop, single-thread access is natural and efficient.
+///
 /// Created by Anonymous on Dec 07, 2025
 /// =======================================
 #pragma once
@@ -17,6 +32,7 @@
 #include <functional>
 
 #include "Player.h"
+#include "core/ThreadSafety.h"
 
 /// ============================================================================
 /// SPATIAL HASH
@@ -49,12 +65,13 @@ public:
     /// ENTITY MANAGEMENT
     /// ========================================================================
 
-    /// Add an entity to the spatial hash
-    /// Call when entity spawns or enters the world
+    /// Add an entity to the spatial hash.
+    /// Call when entity spawns or enters the world.
     void Add(uint64_t entity_id,
              int16_t x,    // TODO: Could be uint16_t
              int16_t y,    // TODO: Could be uint16_t
              std::shared_ptr<Player> entity = nullptr) {
+        AssertGameThread();
         int64_t key = CellKey(x, y);
         cells_[key].insert(entity_id);
         entity_cells_[entity_id] = key;
@@ -64,9 +81,10 @@ public:
         }
     }
 
-    /// Remove an entity from the spatial hash
-    /// Call when entity despawns or leaves the world
+    /// Remove an entity from the spatial hash.
+    /// Call when entity despawns or leaves the world.
     void Remove(uint64_t entity_id) {
+        AssertGameThread();
         auto it = entity_cells_.find(entity_id);
         if (it == entity_cells_.end()) return;
 
@@ -84,12 +102,13 @@ public:
         entity_ptrs_.erase(entity_id);
     }
 
-    /// Update an entity's position
+    /// Update an entity's position.
     /// Call when entity moves. Only modifies data if entity changed cells.
-    /// Returns true if entity changed cells (useful for enter/leave events)
+    /// Returns true if entity changed cells (useful for enter/leave events).
     bool Update(uint64_t entity_id,
                 int16_t new_x,   // TODO: Could be uint16_t
                 int16_t new_y) { // TODO: Could be uint16_t
+        AssertGameThread();
         auto it = entity_cells_.find(entity_id);
         if (it == entity_cells_.end()) {
             return false;  // Entity not in spatial hash, can't update
@@ -121,8 +140,8 @@ public:
     /// SPATIAL QUERIES
     /// ========================================================================
 
-    /// Get all entity IDs within range of a position
-    /// Returns entities in cells that overlap with the range
+    /// Get all entity IDs within range of a position.
+    /// Returns entities in cells that overlap with the range.
     /// Note: This is a COARSE filter. Caller should do exact distance check.
     ///
     /// For a 2D tile RPG with VIEW_RANGE = 5:
@@ -131,6 +150,7 @@ public:
                                        int16_t y,      // TODO: Could be uint16_t
                                        int16_t range)  // TODO: Could be uint16_t
     const {
+        AssertGameThread();
         std::vector<uint64_t> result;
 
         // Convert position to cell index
@@ -163,13 +183,14 @@ public:
         return result;
     }
 
-    /// Get all entity pointers within range
-    /// More convenient when you need actual entity data
-    /// Optimized: directly iterates cells without intermediate ID vector
+    /// Get all entity pointers within range.
+    /// More convenient when you need actual entity data.
+    /// Optimized: directly iterates cells without intermediate ID vector.
     std::vector<std::shared_ptr<Player>> GetNearbyEntities(int16_t x,     // TODO: Could be uint16_t
                                                            int16_t y,     // TODO: Could be uint16_t
                                                            int16_t range) // TODO: Could be uint16_t
     const {
+        AssertGameThread();
         std::vector<std::shared_ptr<Player>> result;
 
         // Convert position to cell index
@@ -204,20 +225,23 @@ public:
     /// ENTITY LOOKUP
     /// ========================================================================
 
-    /// Get entity pointer by ID
+    /// Get entity pointer by ID.
     std::shared_ptr<Player> GetEntity(uint64_t entity_id) const {
+        AssertGameThread();
         auto it = entity_ptrs_.find(entity_id);
         return (it != entity_ptrs_.end()) ? it->second : nullptr;
     }
 
-    /// Check if entity exists in spatial hash
+    /// Check if entity exists in spatial hash.
     bool Contains(uint64_t entity_id) const {
+        AssertGameThread();
         return entity_cells_.find(entity_id) != entity_cells_.end();
     }
 
-    /// Check if a player is at exact position (excluding a specific player)
-    /// Returns true if any player other than exclude_id is at (x, y)
+    /// Check if a player is at exact position (excluding a specific player).
+    /// Returns true if any player other than exclude_id is at (x, y).
     bool IsPlayerAt(int16_t x, int16_t y, uint64_t exclude_id = 0) const {
+        AssertGameThread();
         int64_t key = CellKey(x, y);
         auto cell_it = cells_.find(key);
         if (cell_it == cells_.end()) return false;
@@ -234,8 +258,9 @@ public:
         return false;
     }
 
-    /// Get total entity count
+    /// Get total entity count.
     size_t Count() const {
+        AssertGameThread();
         return entity_cells_.size();
     }
 
@@ -243,8 +268,9 @@ public:
     /// ITERATION
     /// ========================================================================
 
-    /// Iterate over all entities
+    /// Iterate over all entities.
     void ForEach(const std::function<void(uint64_t, const std::shared_ptr<Player> &)> &func) const {
+        AssertGameThread();
         for (const auto &[id, entity]: entity_ptrs_) {
             if (entity) {
                 func(id, entity);
@@ -256,19 +282,30 @@ public:
     /// MAINTENANCE
     /// ========================================================================
 
-    /// Clear all data
+    /// Clear all data.
     void Clear() {
+        AssertGameThread();
         cells_.clear();
         entity_cells_.clear();
         entity_ptrs_.clear();
     }
 
-    /// Get number of active cells (for debugging)
+    /// Get number of active cells (for debugging).
     size_t CellCount() const {
+        AssertGameThread();
         return cells_.size();
     }
 
 private:
+    /// ========================================================================
+    /// THREAD SAFETY HELPER
+    /// ========================================================================
+    void AssertGameThread() const {
+        ASSERT_GAME_THREAD(thread_owner_);
+        if (!thread_owner_.IsOwnerSet()) {
+            thread_owner_.SetOwner();
+        }
+    }
     /// ========================================================================
     /// INTERNAL - Cell Key Calculation
     /// ========================================================================
@@ -298,4 +335,7 @@ private:
 
     /// entity_id -> entity pointer (for returning actual entities)
     std::unordered_map<uint64_t, std::shared_ptr<Player>> entity_ptrs_;
+
+    /// Thread owner for debug assertions (mutable for const methods)
+    mutable ThreadOwner thread_owner_;
 };
