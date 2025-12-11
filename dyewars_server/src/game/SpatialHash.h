@@ -30,6 +30,7 @@
 #include <memory>
 #include <cstdint>
 #include <functional>
+#include <algorithm>
 
 #include "Player.h"
 #include "core/ThreadSafety.h"
@@ -78,6 +79,8 @@ public:
 
         if (entity) {
             entity_ptrs_[entity_id] = entity;
+            // Also store in cell for direct access (avoids double lookup in GetNearbyEntities)
+            cell_entities_[key].push_back(entity);
         }
     }
 
@@ -91,6 +94,19 @@ public:
         // Remove from cell
         int64_t key = it->second;
         cells_[key].erase(entity_id);
+
+        // Remove from cell_entities_ vector
+        auto cell_it = cell_entities_.find(key);
+        if (cell_it != cell_entities_.end()) {
+            auto& vec = cell_it->second;
+            vec.erase(std::remove_if(vec.begin(), vec.end(),
+                [entity_id](const std::shared_ptr<Player>& p) {
+                    return p && p->GetID() == entity_id;
+                }), vec.end());
+            if (vec.empty()) {
+                cell_entities_.erase(cell_it);
+            }
+        }
 
         // Clean up empty cells to prevent memory bloat
         if (cells_[key].empty()) {
@@ -122,14 +138,34 @@ public:
             return false;
         }
 
-        // Remove from old cell
         int64_t old_key = it->second;
+
+        // Remove from old cell (ID set)
         cells_[old_key].erase(entity_id);
         if (cells_[old_key].empty()) {
             cells_.erase(old_key);
         }
 
-        // Add to new cell
+        // Move entity pointer from old cell to new cell
+        auto ptr_it = entity_ptrs_.find(entity_id);
+        if (ptr_it != entity_ptrs_.end() && ptr_it->second) {
+            // Remove from old cell_entities_
+            auto old_cell_it = cell_entities_.find(old_key);
+            if (old_cell_it != cell_entities_.end()) {
+                auto& old_vec = old_cell_it->second;
+                old_vec.erase(std::remove_if(old_vec.begin(), old_vec.end(),
+                    [entity_id](const std::shared_ptr<Player>& p) {
+                        return p && p->GetID() == entity_id;
+                    }), old_vec.end());
+                if (old_vec.empty()) {
+                    cell_entities_.erase(old_cell_it);
+                }
+            }
+            // Add to new cell_entities_
+            cell_entities_[new_key].push_back(ptr_it->second);
+        }
+
+        // Add to new cell (ID set)
         cells_[new_key].insert(entity_id);
         entity_cells_[entity_id] = new_key;
 
@@ -185,7 +221,7 @@ public:
 
     /// Get all entity pointers within range.
     /// More convenient when you need actual entity data.
-    /// Optimized: directly iterates cells without intermediate ID vector.
+    /// Optimized: uses cell_entities_ for direct pointer access (no ID→ptr lookup).
     std::vector<std::shared_ptr<Player>> GetNearbyEntities(int16_t x,     // TODO: Could be uint16_t
                                                            int16_t y,     // TODO: Could be uint16_t
                                                            int16_t range) // TODO: Could be uint16_t
@@ -207,12 +243,12 @@ public:
                 if (cx < 0 || cy < 0) continue;
 
                 int64_t key = MakeCellKey(cx, cy);
-                auto cell_it = cells_.find(key);
-                if (cell_it != cells_.end()) {
-                    for (uint64_t id : cell_it->second) {
-                        auto ptr_it = entity_ptrs_.find(id);
-                        if (ptr_it != entity_ptrs_.end() && ptr_it->second) {
-                            result.push_back(ptr_it->second);
+                // Direct pointer lookup - no ID→entity_ptrs_ indirection
+                auto cell_it = cell_entities_.find(key);
+                if (cell_it != cell_entities_.end()) {
+                    for (const auto& entity : cell_it->second) {
+                        if (entity) {
+                            result.push_back(entity);
                         }
                     }
                 }
@@ -286,6 +322,7 @@ public:
     void Clear() {
         AssertGameThread();
         cells_.clear();
+        cell_entities_.clear();
         entity_cells_.clear();
         entity_ptrs_.clear();
     }
@@ -330,10 +367,14 @@ private:
     /// cell_key -> set of entity IDs in that cell
     std::unordered_map<int64_t, std::unordered_set<uint64_t>> cells_;
 
+    /// cell_key -> vector of entity pointers (for fast GetNearbyEntities)
+    /// Avoids ID→ptr lookup indirection in hot path
+    std::unordered_map<int64_t, std::vector<std::shared_ptr<Player>>> cell_entities_;
+
     /// entity_id -> current cell key (for O(1) removal and move detection)
     std::unordered_map<uint64_t, int64_t> entity_cells_;
 
-    /// entity_id -> entity pointer (for returning actual entities)
+    /// entity_id -> entity pointer (for GetEntity by ID)
     std::unordered_map<uint64_t, std::shared_ptr<Player>> entity_ptrs_;
 
     /// Thread owner for debug assertions (mutable for const methods)

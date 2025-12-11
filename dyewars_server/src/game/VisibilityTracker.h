@@ -32,18 +32,21 @@ public:
 
     /// Compare currently visible players against what player already knows.
     /// Returns who entered/left view and updates internal state.
+    /// Uses scratch buffers to avoid per-call allocations.
     Diff Update(uint64_t player_id, const std::vector<std::shared_ptr<Player>>& visible_now) {
         AssertGameThread();
         Diff diff;
         auto& known = known_players_[player_id];
 
+        // Reuse scratch buffer - clear keeps capacity
+        scratch_visible_ids_.clear();
+
         // Build set of currently visible IDs and find newly entered players
-        std::unordered_set<uint64_t> visible_ids;
         for (const auto& p : visible_now) {
             uint64_t pid = p->GetID();
             if (pid == player_id) continue;
 
-            visible_ids.insert(pid);
+            scratch_visible_ids_.insert(pid);
 
             if (!known.contains(pid)) {
                 diff.entered.push_back(p);
@@ -52,17 +55,19 @@ public:
             }
         }
 
+        // Reuse scratch buffer for removals
+        scratch_to_remove_.clear();
+
         // Find players who left view
-        std::vector<uint64_t> to_remove;
         for (uint64_t known_id : known) {
-            if (!visible_ids.contains(known_id)) {
+            if (!scratch_visible_ids_.contains(known_id)) {
                 diff.left.push_back(known_id);
-                to_remove.push_back(known_id);
+                scratch_to_remove_.push_back(known_id);
             }
         }
 
         // Remove players who left
-        for (uint64_t id : to_remove) {
+        for (uint64_t id : scratch_to_remove_) {
             known.erase(id);
             auto it = known_by_.find(id);
             if (it != known_by_.end()) {
@@ -198,4 +203,9 @@ private:
     std::unordered_map<uint64_t, std::unordered_set<uint64_t>> known_players_;
     std::unordered_map<uint64_t, std::unordered_set<uint64_t>> known_by_;
     mutable ThreadOwner thread_owner_;
+
+    /// Scratch buffers - reused across Update() calls to avoid allocations.
+    /// clear() preserves capacity, so after a few calls these stabilize.
+    std::unordered_set<uint64_t> scratch_visible_ids_;
+    std::vector<uint64_t> scratch_to_remove_;
 };

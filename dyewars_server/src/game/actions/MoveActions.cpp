@@ -34,11 +34,12 @@ namespace Actions::Movement {
                 // 2. Update observers: who can no longer see ME?
                 // ============================================================
 
+                // Cache spatial query - used for both visibility update and observer notification
+                auto visible = server->GetWorld().GetPlayersInRange(
+                        player->GetX(), player->GetY());
+
                 // Part 1: Update mover's own visibility
                 if (conn) {
-                    auto visible = server->GetWorld().GetPlayersInRange(
-                            player->GetX(), player->GetY());
-
                     auto diff = server->GetWorld().Visibility().Update(player_id, visible);
 
                     // Send S_Player_Spatial for players who entered mover's view

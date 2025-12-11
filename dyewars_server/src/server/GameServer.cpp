@@ -274,6 +274,9 @@ void GameServer::BroadcastDirtyPlayers(const std::vector<std::shared_ptr<Player>
 
         // Build batch packet
         Protocol::Packet batch;
+        // Pre-reserve: opcode (1) + count (1) + players * 13 bytes each (ID:8 + X:2 + Y:2 + facing:1)
+        batch.payload.reserve(2 + data.updates.size() * 13);
+
         Protocol::PacketWriter::WriteByte(batch.payload,
                                           Protocol::Opcode::Batch::Server::S_Player_Spatial.op);
         Protocol::PacketWriter::WriteByte(batch.payload, 0); // Placeholder for count

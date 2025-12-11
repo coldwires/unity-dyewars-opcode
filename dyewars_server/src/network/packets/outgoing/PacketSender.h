@@ -26,6 +26,9 @@ namespace Packets::PacketSender {
         if (players.empty()) return;
 
         Protocol::Packet pkt;
+        // Pre-reserve: opcode (1) + count (1) + players * 13 bytes each (ID:8 + X:2 + Y:2 + facing:1)
+        pkt.payload.reserve(2 + players.size() * 13);
+
         Protocol::PacketWriter::WriteByte(pkt.payload, Protocol::Opcode::Batch::Server::S_Player_Spatial.op);
         Protocol::PacketWriter::WriteByte(pkt.payload, 0);  // Count placeholder
 
