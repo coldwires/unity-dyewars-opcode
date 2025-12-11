@@ -18,7 +18,7 @@ namespace Packets::PacketSender {
         Protocol::PacketWriter::WriteShort(pkt.payload, player->GetY());
         Protocol::PacketWriter::WriteByte(pkt.payload, player->GetFacing());
         pkt.size = static_cast<uint16_t>(pkt.payload.size());
-        client->SendPacket(pkt);
+        client->QueuePacket(pkt);
     }
 
     inline void BatchPlayerSpatial(const std::shared_ptr<ClientConnection>& client,
@@ -40,7 +40,7 @@ namespace Packets::PacketSender {
 
         pkt.payload[1] = count;
         pkt.size = static_cast<uint16_t>(pkt.payload.size());
-        client->SendPacket(pkt);
+        client->QueuePacket(pkt);
     }
 
     inline void PlayerSpatial(const std::shared_ptr<ClientConnection>& client,
@@ -53,7 +53,7 @@ namespace Packets::PacketSender {
         Protocol::PacketWriter::WriteShort(pkt.payload, static_cast<uint16_t>(y));
         Protocol::PacketWriter::WriteByte(pkt.payload, facing);
         pkt.size = static_cast<uint16_t>(pkt.payload.size());
-        client->SendPacket(pkt);
+        client->QueuePacket(pkt);
     }
 
     inline void PositionCorrection(const std::shared_ptr<ClientConnection>& client,
@@ -64,7 +64,7 @@ namespace Packets::PacketSender {
         Protocol::PacketWriter::WriteShort(pkt.payload, static_cast<uint16_t>(y));
         Protocol::PacketWriter::WriteByte(pkt.payload, facing);
         pkt.size = static_cast<uint16_t>(pkt.payload.size());
-        client->SendPacket(pkt);
+        client->QueuePacket(pkt);
     }
 
     inline void FacingCorrection(const std::shared_ptr<ClientConnection>& client, uint8_t facing) {
@@ -72,7 +72,7 @@ namespace Packets::PacketSender {
         Protocol::PacketWriter::WriteByte(pkt.payload, Protocol::Opcode::LocalPlayer::Server::S_Facing_Correction.op);
         Protocol::PacketWriter::WriteByte(pkt.payload, facing);
         pkt.size = static_cast<uint16_t>(pkt.payload.size());
-        client->SendPacket(pkt);
+        client->QueuePacket(pkt);
     }
 
     inline void PlayerLeft(const std::shared_ptr<ClientConnection>& client, uint64_t player_id) {
@@ -80,7 +80,7 @@ namespace Packets::PacketSender {
         Protocol::PacketWriter::WriteByte(pkt.payload, Protocol::Opcode::RemotePlayer::Server::S_Left_Game.op);
         Protocol::PacketWriter::WriteUInt64(pkt.payload, player_id);
         pkt.size = static_cast<uint16_t>(pkt.payload.size());
-        client->SendPacket(pkt);
+        client->QueuePacket(pkt);
     }
 
     inline void ServerShutdown(const std::shared_ptr<ClientConnection>& client, uint8_t reason = 0x01) {
@@ -88,13 +88,13 @@ namespace Packets::PacketSender {
         Protocol::PacketWriter::WriteByte(pkt.payload, Protocol::Opcode::Connection::Server::S_ServerShutdown.op);
         Protocol::PacketWriter::WriteByte(pkt.payload, reason);
         pkt.size = static_cast<uint16_t>(pkt.payload.size());
-        client->SendPacket(pkt);
+        client->QueuePacket(pkt);
     }
 
     inline void GivePlayerID(const std::shared_ptr<ClientConnection>& client) {
         Protocol::Packet pkt;
         Protocol::PacketWriter::WriteByte(pkt.payload, Protocol::Opcode::Connection::Server::S_HandshakeAccepted.op);
         pkt.size = static_cast<uint16_t>(pkt.payload.size());
-        client->SendPacket(pkt);
+        client->QueuePacket(pkt);
     }
 }

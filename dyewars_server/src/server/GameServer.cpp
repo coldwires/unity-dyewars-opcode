@@ -297,7 +297,7 @@ void GameServer::BroadcastDirtyPlayers(const std::vector<std::shared_ptr<Player>
 
         // Send
         auto data_bytes = std::make_shared<std::vector<uint8_t>>(batch.ToBytes());
-        conn->RawSend(data_bytes);
+        conn->QueueRaw(data_bytes);
     }
 }
 

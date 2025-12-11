@@ -125,36 +125,58 @@ void ClientConnection::CloseSocket() {
 }
 
 // =====================
-// PACKETS
+// PACKET SEND QUEUE
 // =====================
-/// Send
-void ClientConnection::SendPacket(const Protocol::Packet &pkt) {
-    auto self(shared_from_this());
+
+void ClientConnection::QueuePacket(const Protocol::Packet &pkt) {
     auto data = std::make_shared<std::vector<uint8_t>>(pkt.ToBytes());
-
-    // Track bandwidth
-    BandwidthMonitor::Instance().RecordOutgoing(data->size());
-
-    asio::async_write(socket_, asio::buffer(*data),
-                      [this, self, data](const std::error_code ec, std::size_t) {
-                          if (ec && ec != asio::error::operation_aborted) {
-                              Log::Debug("Write failed for client {}: {}", client_id_, ec.message());
-                          }
-                      });
+    QueueRaw(std::move(data));
 }
 
-void ClientConnection::RawSend(const std::shared_ptr<std::vector<uint8_t>> &data) {
-    // Track bandwidth
+void ClientConnection::QueueRaw(std::shared_ptr<std::vector<uint8_t>> data) {
+    // Track bandwidth (safe to call from any thread)
     BandwidthMonitor::Instance().RecordOutgoing(data->size());
 
-    auto self(shared_from_this());
+    {
+        std::lock_guard lock(send_mutex_);
+        send_queue_.push(std::move(data));
+    }
+
+    // Dispatch to IO thread to process the queue
+    asio::post(socket_.get_executor(), [self = shared_from_this()]() {
+        self->StartNextSend();
+    });
+}
+
+void ClientConnection::StartNextSend() {
+    // IO thread only - no lock needed for write_in_progress_
+    if (write_in_progress_) return;
+
+    std::shared_ptr<std::vector<uint8_t>> data;
+    {
+        std::lock_guard lock(send_mutex_);
+        if (send_queue_.empty()) return;
+        data = std::move(send_queue_.front());
+        send_queue_.pop();
+    }
+
+    write_in_progress_ = true;
     asio::async_write(socket_, asio::buffer(*data),
-                      [this, self, data](const std::error_code ec, std::size_t) {
-                          // Error handling
-                          if (ec && ec != asio::error::operation_aborted) {
-                              Log::Debug("Write failed for client {}: {}", client_id_, ec.message());
-                          }
-                      });
+        [self = shared_from_this(), data](const std::error_code& ec, std::size_t) {
+            self->OnSendComplete(ec);
+        });
+}
+
+void ClientConnection::OnSendComplete(const std::error_code& ec) {
+    write_in_progress_ = false;
+
+    if (ec && ec != asio::error::operation_aborted) {
+        Log::Debug("Write failed for client {}: {}", client_id_, ec.message());
+        return;  // Don't continue sending on error
+    }
+
+    // Send next packet if queue not empty
+    StartNextSend();
 }
 
 /// Receive
@@ -399,7 +421,7 @@ void ClientConnection::SendPing() {
     Protocol::PacketWriter::WriteByte(pkt.payload, Protocol::Opcode::Connection::Server::S_Ping_Request.op);
     Protocol::PacketWriter::WriteUInt(pkt.payload, timestamp);
     pkt.size = static_cast<uint16_t>(pkt.payload.size());
-    SendPacket(pkt);
+    QueuePacket(pkt);
 }
 
 void ClientConnection::RecordPing(uint32_t ping_ms) {

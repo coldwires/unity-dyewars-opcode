@@ -5,6 +5,8 @@
 #include <memory>
 #include <vector>
 #include <deque>
+#include <queue>
+#include <mutex>
 #include <unordered_set>
 #include "network/Packets/Protocol.h"
 #include "core/ThreadSafety.h"
@@ -85,14 +87,17 @@ public:
     void CloseSocket();
 
     // =========================================================================
-    // PACKET I/O
+    // PACKET I/O (Thread-safe send queue)
+    //
+    // All sends are queued from any thread, then dispatched to IO thread.
+    // This ensures async_write is only called from the IO thread.
     // =========================================================================
 
-    /// Send a framed packet (adds magic bytes + size header)
-    void SendPacket(const Protocol::Packet &pkt);
+    /// Queue a framed packet for sending (thread-safe, called from game thread)
+    void QueuePacket(const Protocol::Packet &pkt);
 
-    /// Send raw bytes directly (caller must include framing)
-    void RawSend(const std::shared_ptr<std::vector<uint8_t>> &data);
+    /// Queue raw bytes for sending (thread-safe, caller must include framing)
+    void QueueRaw(std::shared_ptr<std::vector<uint8_t>> data);
 
     // =========================================================================
     // PING
@@ -175,6 +180,16 @@ private:
     void CheckIfHandshakePacket(const std::vector<uint8_t> &data);
     void CompleteHandshake();
     void FailHandshake(const std::string &reason);
+
+    // =========================================================================
+    // SEND QUEUE (IO thread processing)
+    // =========================================================================
+
+    /// Process next packet in send queue (IO thread only)
+    void StartNextSend();
+
+    /// Handle completion of async_write (IO thread only)
+    void OnSendComplete(const std::error_code& ec);
 
     // =========================================================================
     // LOGGING
@@ -272,4 +287,17 @@ private:
     /// Rolling average of recent ping samples.
     /// Thread-safe internally (atomic average value).
     PingTracker ping_;
+
+    // --- Send Queue (MUTEX protected, IO_THREAD processes) ---
+
+    /// Queue of packets waiting to be sent.
+    /// Protected by send_mutex_. Populated from any thread, drained by IO thread.
+    std::queue<std::shared_ptr<std::vector<uint8_t>>> send_queue_;
+
+    /// Mutex protecting send_queue_ access.
+    std::mutex send_mutex_;
+
+    /// True when an async_write is in progress (IO_THREAD only, no lock needed).
+    /// Ensures only one async_write at a time per socket (ASIO requirement).
+    bool write_in_progress_ = false;
 };
