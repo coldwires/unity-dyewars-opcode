@@ -14,6 +14,7 @@
 #include <random>
 #include <cassert>
 #include <functional>
+#include <atomic>
 #include "core/Log.h"
 #include "core/ThreadSafety.h"
 #include "Player.h"
@@ -79,6 +80,7 @@ public:
         players_[player_id] = player;
         client_to_player_[client_id] = player_id;
         player_to_client_[player_id] = client_id;  // Reverse mapping for O(1) lookup
+        player_count_.fetch_add(1, std::memory_order_relaxed);
 
         Log::Trace("Player {} created for client {}", player_id, client_id);
         return player;
@@ -99,6 +101,7 @@ public:
         if (player_it != players_.end()) {
             dirty_players_.erase(player_it->second);
             players_.erase(player_it);
+            player_count_.fetch_sub(1, std::memory_order_relaxed);
         }
 
         Log::Info("Player {} removed", player_id);
@@ -117,6 +120,7 @@ public:
             if (player_it != players_.end()) {
                 dirty_players_.erase(player_it->second);
                 players_.erase(player_it);
+                player_count_.fetch_sub(1, std::memory_order_relaxed);
             }
 
             // Remove both mappings
@@ -209,10 +213,9 @@ public:
         return result;
     }
 
-    /// Get player count
-    size_t Count() {
-        AssertGameThread();
-        return players_.size();
+    /// Get player count (thread-safe, can be called from any thread)
+    size_t Count() const {
+        return player_count_.load(std::memory_order_relaxed);
     }
 
     /// ========================================================================
@@ -260,6 +263,9 @@ private:
     std::unordered_map<uint64_t, uint64_t> client_to_player_;
     std::unordered_map<uint64_t, uint64_t> player_to_client_;
     std::unordered_set<std::shared_ptr<Player>> dirty_players_;
+
+    /// Atomic player count for thread-safe reads from any thread (e.g., stats command)
+    std::atomic<size_t> player_count_{0};
 
     mutable ThreadOwner thread_owner_;
 
