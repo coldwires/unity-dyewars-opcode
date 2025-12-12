@@ -16,10 +16,13 @@ A multiplayer grid-based game with a C++ authoritative server and Unity thin cli
 ## Table of Contents
 
 - [Server Architecture](#server-architecture-c)
+- [Performance](#performance)
+- [Debug Dashboard](#debug-dashboard)
 - [Client Architecture](#client-architecture-unityc)
 - [Packet Protocol](#packet-protocol)
 - [Lua Scripting](#lua-scripting-system)
 - [Building & Running](#building--running)
+- [Console Commands](#console-commands)
 - [Project Structure](#project-structure)
 
 ---
@@ -30,10 +33,24 @@ A multiplayer grid-based game with a C++ authoritative server and Unity thin cli
 
 | Thread | Responsibility |
 |--------|----------------|
-| **Main (asio)** | Accepts connections, async read/write packets |
-| **Game Loop** | 20 ticks/sec, batches updates, broadcasts |
-| **Console** | Reads stdin for commands (`r` = reload, `q` = quit) |
-| **File Watcher** | Monitors Lua scripts for hot-reload |
+| **IO Thread (asio)** | Accepts connections, async read/write packets |
+| **Game Loop Thread** | 20 ticks/sec, processes actions, broadcasts updates |
+| **Console Thread** | Reads stdin for commands |
+
+Communication between threads uses a thread-safe action queue (`GameServer::QueueAction`). Network handlers queue lambdas that execute on the game thread.
+
+### Core Components
+
+| Class | Responsibility |
+|-------|----------------|
+| `GameServer` | Central coordinator: accepts connections, runs game loop, broadcasts |
+| `ClientConnection` | Per-client TCP handler, packet parsing, handshake |
+| `ClientManager` | Tracks all connections (real + fake for stress testing) |
+| `World` | Owns TileMap (static), SpatialHash (dynamic), VisibilityTracker |
+| `SpatialHash` | O(1) spatial queries via flat grid + hash map fallback |
+| `VisibilityTracker` | Bidirectional tracking for enter/leave view events |
+| `PlayerRegistry` | Player lifecycle, dirty tracking for broadcasts |
+| `Player` | Position, facing, movement validation with cooldowns |
 
 <details>
 <summary><strong>Connection Flow (click to expand)</strong></summary>
@@ -41,37 +58,24 @@ A multiplayer grid-based game with a C++ authoritative server and Unity thin cli
 When a client connects:
 
 ```cpp
-// 1. GameServer::StartAccept() is listening
+// 1. GameServer accepts connection
 acceptor_.async_accept([this](std::error_code ec, asio::ip::tcp::socket socket) {
-    // 2. Assign unique ID
-    uint32_t id = next_player_id_++;
-    
-    // 3. Create GameSession for this connection
-    auto session = std::make_shared<GameSession>(std::move(socket), lua_engine_, this, id);
-    
-    // 4. Store in sessions map (mutex protected)
-    {
-        std::lock_guard<std::mutex> lock(sessions_mutex_);
-        sessions_[id] = session;
-    }
-    
-    // 5. Start session
-    session->Start();
-    
-    // 6. Continue listening
-    StartAccept();
-});
-```
+    // 2. Create ClientConnection with unique ID
+    auto client = std::make_shared<ClientConnection>(std::move(socket), this, next_id_++);
 
-```cpp
-// GameSession::Start() sends initial data
-void GameSession::Start() {
-    SendPlayerID();           // "You are player #X"
-    SendPosition();           // "You are at (0,0)"
-    SendAllPlayers();         // "Here are other players"
-    BroadcastPlayerJoined();  // Tell others about this player
-    ReadPacketHeader();       // Begin async read loop
-}
+    // 3. Add to ClientManager (mutex protected)
+    clients_.AddClient(client);
+
+    // 4. Start async read loop
+    client->Start();
+});
+
+// 5. On successful handshake, queue player creation on game thread
+server->QueueAction([=]() {
+    auto player = players_.CreatePlayer(client_id, spawn_x, spawn_y);
+    world_.AddPlayer(player->GetID(), spawn_x, spawn_y, player);
+    // Send welcome packet, nearby players, etc.
+});
 ```
 
 </details>
@@ -84,41 +88,104 @@ void GameSession::Start() {
 **Solution:** Batch updates using dirty flags:
 
 ```cpp
-// When player moves (network thread)
-if (moved) {
-    is_dirty_ = true;  // Mark for broadcast
-    SendPosition();    // Only tell THIS player immediately
-}
+// When player moves successfully
+world.UpdatePlayerPosition(player_id, new_x, new_y);
+players.MarkDirty(player);  // Flag for broadcast
 
-// Game loop (20 ticks/sec)
-void GameServer::ProcessUpdates() {
-    std::vector<PlayerData> moving_players;
-    
-    for (auto& pair : sessions_) {
-        if (pair.second->IsDirty()) {
-            moving_players.push_back(pair.second->GetPlayerData());
-            pair.second->SetDirty(false);
-        }
-    }
-    
-    // Build ONE packet, send to ALL clients
+// Game loop processes dirty players once per tick
+void ProcessTick() {
+    auto dirty = players_.ConsumeDirtyPlayers();
+    BroadcastDirtyPlayers(dirty);  // One batch operation
 }
 ```
 
-**Why `std::atomic<bool>`?** The flag is written by network thread and read by game loop thread—atomic prevents data races.
+</details>
+
+<details>
+<summary><strong>Spatial Hash Architecture (click to expand)</strong></summary>
+
+The spatial hash divides the world into cells for efficient range queries:
+
+```cpp
+// Flat grid for O(1) cell access (no hash lookups)
+std::vector<std::vector<std::shared_ptr<Player>>> flat_grid_;
+
+// Query: Who's near position (x, y)?
+void ForEachNearby(x, y, range, [](const auto& player) {
+    // Zero-copy iteration, no vector allocation
+});
+```
+
+**Critical ordering for position updates:**
+```cpp
+// 1. Update player's internal position FIRST
+player->SetPosition(new_x, new_y);
+
+// 2. THEN update spatial hash (derives OLD cell from stored key)
+world.UpdatePlayerPosition(player_id, new_x, new_y);
+```
+
+The spatial hash stores a cell key per entity. On update, it derives the old cell from this key (not from `GetX()/GetY()` which already has the new position).
 
 </details>
 
-### Class Responsibilities
+<details>
+<summary><strong>Visibility Tracking (click to expand)</strong></summary>
 
-| Class | Responsibility |
-|-------|----------------|
-| `GameServer` | Accepts connections, owns sessions, runs game loop |
-| `GameSession` | Manages one client, handles packets, owns Player |
-| `Player` | Position state, movement with collision |
-| `GameMap` | Walkable/wall data |
-| `LuaGameEngine` | Runs scripts, hot-reload support |
-| `DatabaseManager` | SQLite wrapper (not yet integrated) |
+**Problem:** When A moves toward stationary B, the dirty system tells B about A. But A never learns about B (B didn't move).
+
+**Solution:** Track who each player "knows about":
+
+```
+A moves → Update(A, visible_players)
+        → Diff against A's known set
+        → entered: send S_Player_Spatial
+        → left: send S_Left_Game
+```
+
+**Bidirectional maps for O(K) disconnect cleanup:**
+```cpp
+known_players_: A → {B, C}     // A knows about B and C
+known_by_:      B → {A, D}     // B is known by A and D
+```
+
+When B disconnects, only update A and D (not all N players).
+
+</details>
+
+---
+
+## Performance
+
+The server handles **2000+ concurrent players** at 20 TPS with optimized spatial queries.
+
+| Metric | Value |
+|--------|-------|
+| Target Tick Rate | 20 TPS (50ms budget) |
+| Spatial Hash Query | ~6-8ms (2000 spread players) |
+| Total Tick Time | ~40-50ms (2000 spread players) |
+
+### Key Optimizations
+
+1. **Flat Grid Spatial Hash** - O(1) array indexing instead of hash map lookups
+2. **Zero-Copy Iteration** - `ForEachNearby()` template avoids vector allocation
+3. **Batch Client Lookups** - Single mutex acquisition for multiple connection lookups
+4. **Bidirectional Visibility** - O(K) disconnect cleanup instead of O(N)
+
+See `src/debug/PERFORMANCE_OPTIMIZATIONS.md` for detailed documentation.
+
+---
+
+## Debug Dashboard
+
+Access `http://localhost:8082` when server is running for real-time metrics:
+
+- **Performance** - Tick time (avg/max), TPS, tick history chart
+- **Connections** - Real clients, fake clients (bots), total players
+- **World** - Visibility tracked, dirty players per tick
+- **Bandwidth** - Current/average/total bytes out, packets/sec
+- **Bot Movement** - Spatial query, visibility, departure time breakdown
+- **Broadcast Breakdown** - Viewer query, client lookup, packet send time
 
 ---
 
@@ -152,23 +219,19 @@ void Update() {
 Move locally for responsiveness, correct if server disagrees:
 
 ```csharp
-public void SendMoveCommand(int direction) {
+public void SendMoveCommand(int direction, int facing) {
     // 1. Send to server
-    SendMessage(new byte[] { 0x01, (byte)direction });
-    
+    SendMessage(new byte[] { 0x01, (byte)direction, (byte)facing });
+
     // 2. Predict locally (immediate feedback)
-    Vector2Int predicted = MyPosition;
-    if (direction == 0) predicted.y += 1;
-    // ...
+    Vector2Int predicted = CalculateNewPosition(direction);
     MyPosition = predicted;
     OnMyPositionUpdated?.Invoke(MyPosition);
 }
 
 // 3. Server correction (if prediction was wrong)
-case 0x10:
-    if (MyPosition.x != x || MyPosition.y != y) {
-        MyPosition = new Vector2Int(x, y);  // Snap to server truth
-    }
+case 0x11:  // Position correction
+    MyPosition = new Vector2Int(x, y);  // Snap to server truth
     break;
 ```
 
@@ -189,16 +252,26 @@ case 0x10:
 
 ### Message Types
 
-| Opcode | Direction | Name | Payload |
-|--------|-----------|------|---------|
-| `0x01` | C→S | Move | `[direction]` (0=up, 1=right, 2=down, 3=left) |
-| `0x02` | C→S | Request Position | *(empty)* |
-| `0x03` | C→S | Custom Message | `[data...]` |
-| `0x10` | S→C | Your Position | `[x][y]` |
-| `0x12` | S→C | Other Player Update | `[id:4][x][y]` |
-| `0x13` | S→C | Your Player ID | `[id:4]` |
-| `0x14` | S→C | Player Left | `[id:4]` |
-| `0x20` | S→C | Batch Update | `[count][id,x,y]...` |
+**Client → Server:**
+
+| Opcode | Name | Payload |
+|--------|------|---------|
+| `0x01` | Move Request | `[direction:1][facing:1]` |
+| `0x02` | Turn Request | `[facing:1]` |
+| `0x04` | Interact Request | *(empty)* |
+| `0x40` | Attack Request | *(empty)* |
+
+**Server → Client:**
+
+| Opcode | Name | Payload |
+|--------|------|---------|
+| `0x10` | Welcome | `[player_id:8][x:2][y:2][facing:1]` |
+| `0x11` | Position Correction | `[x:2][y:2][facing:1]` |
+| `0x12` | Facing Correction | `[facing:1]` |
+| `0x25` | Batch Player Spatial | `[count:1][[id:8][x:2][y:2][facing:1]]...` |
+| `0x26` | Player Left | `[player_id:8]` |
+| `0xF0` | Handshake Accepted | *(empty)* |
+| `0xF2` | Server Shutdown | `[reason:1]` |
 
 ---
 
@@ -208,23 +281,19 @@ Game logic can be modified without recompiling:
 
 ```lua
 -- scripts/main.lua
-function process_move_command(x, y, direction)
-    local new_x, new_y = x, y
-    
-    -- Custom rules: wall at (5,5)
-    if new_x == 5 and new_y == 5 then
-        return {x, y}  -- Block movement
-    end
-    
-    return {new_x, new_y}
-end
-
 function on_player_moved(player_id, x, y)
     -- React to movement (traps, triggers, etc.)
+    print("Player " .. player_id .. " moved to " .. x .. "," .. y)
+end
+
+function on_player_joined(player_id)
+    print("Welcome player " .. player_id)
 end
 ```
 
-**Hot Reload:** Type `r` in server console or save the file (auto-detected).
+**Hot Reload:** Type `r` in server console to reload scripts.
+
+**Note:** Player IDs are passed as strings because Lua's `double` can't represent all `uint64_t` values.
 
 ---
 
@@ -232,21 +301,39 @@ end
 
 ### Server
 
-**Dependencies (vcpkg):** `asio`, `nlohmann_json`, `spdlog`, `sol2`, `lua`, `sqlite3`
+**Requirements:** C++20, CMake, vcpkg
+
+**Dependencies:** `asio`, `nlohmann_json`, `spdlog`, `sol2`, `lua`, `sqlite3`
 
 ```bash
 cd dyewars_server
-mkdir build && cd build
-cmake .. -DCMAKE_TOOLCHAIN_FILE=[vcpkg]/scripts/buildsystems/vcpkg.cmake
-cmake --build .
-./DyeWarsServer
+cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=[vcpkg]/scripts/buildsystems/vcpkg.cmake
+cmake --build build
+./build/DyeWarsServer.exe   # Windows
+./build/DyeWarsServer       # Linux/Mac
 ```
 
 ### Client
 
 1. Open `dyewars/` in Unity
-2. Set server IP in `NetworkManager` (default: `192.168.1.3`)
+2. Configure server IP in NetworkManager
 3. Press Play
+
+---
+
+## Console Commands
+
+| Command | Description |
+|---------|-------------|
+| `start` | Start the server |
+| `stop` | Stop the server |
+| `restart` | Restart the server |
+| `r` | Reload Lua scripts |
+| `stats` | Show bandwidth and player counts |
+| `debug` | Enable trace logging |
+| `bots <count> [spread\|clustered]` | Spawn stress test bots |
+| `nobots` | Remove all bots |
+| `exit` | Shutdown server |
 
 ---
 
@@ -254,18 +341,26 @@ cmake --build .
 
 ```
 DyeWarsProject/
-├── dyewars/                    # Unity client
+├── dyewars/                        # Unity client
 │   └── Assets/code/
-│       ├── NetworkManager.cs   # Networking, input, protocol
-│       └── GridRenderer.cs     # Renders players on grid
+│       ├── NetworkManager.cs       # Networking, protocol, input
+│       └── GridRenderer.cs         # Renders players on grid
 │
-├── dyewars_server/             # C++ server
-│   ├── include/
-│   │   ├── server/             # GameServer, GameSession, Player, GameMap
-│   │   ├── lua/                # LuaEngine
-│   │   └── database/           # DatabaseManager
-│   ├── src/                    # Implementation files
-│   └── scripts/main.lua        # Hot-reloadable game logic
+├── dyewars_server/                 # C++ server
+│   ├── src/
+│   │   ├── main.cpp                # Entry point, console loop
+│   │   ├── core/                   # Log, ThreadSafety
+│   │   ├── server/                 # GameServer, ClientConnection, ClientManager
+│   │   ├── game/                   # World, SpatialHash, Player, VisibilityTracker
+│   │   │   └── actions/            # MoveActions, BotStressTest
+│   │   ├── network/packets/        # Protocol, OpCodes, PacketHandler, PacketSender
+│   │   ├── debug/                  # DebugHttpServer, ServerStats
+│   │   ├── database/               # DatabaseManager (SQLite)
+│   │   └── lua/                    # LuaEngine
+│   ├── scripts/main.lua            # Hot-reloadable game logic
+│   ├── tests/                      # Unit tests
+│   ├── NOTES.md                   # context
+│   └── CMakeLists.txt
 │
 └── README.md
 ```
@@ -278,8 +373,10 @@ DyeWarsProject/
 |---------|-------------|
 | **Authoritative Server** | Client sends input, server decides state |
 | **Client-Side Prediction** | Move locally, correct on server mismatch |
-| **Packet Coalescing** | Batch updates into single packets |
-| **Dirty Flag Pattern** | Track changes, sync only what changed |
-| **Thread Safety** | Mutexes for maps, atomics for flags |
+| **Spatial Partitioning** | Flat grid for O(1) range queries |
+| **Visibility Tracking** | Bidirectional maps for enter/leave events |
+| **Dirty Flag Pattern** | Track changes, batch broadcasts |
+| **Thread Safety** | Action queue, mutexes, atomics |
 | **Hot Reloading** | Change Lua without restart |
 | **Async I/O** | Non-blocking network with Boost.Asio |
+| **Performance Monitoring** | Real-time debug dashboard |
