@@ -55,6 +55,7 @@ file(GLOB_RECURSE SOURCES
         "${CMAKE_CURRENT_SOURCE_DIR}/src/network/*.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/database/*.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/lua/*.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/debug/*.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
 )
 
@@ -79,6 +80,7 @@ add_executable(DyeWarsServer ${SOURCES} ${HEADERS}
         src/game/TileMap.h
         src/game/actions/Actions.cpp
         src/game/actions/MoveActions.cpp
+        src/game/actions/BotStressTest.cpp
         src/database/DatabaseManager.cpp
         src/game/SpatialHash.h
 )

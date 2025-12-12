@@ -198,6 +198,12 @@ public:
         return !dirty_players_.empty();
     }
 
+    /// Get count of dirty players (for stats)
+    size_t DirtyCount() const {
+        AssertGameThread();
+        return dirty_players_.size();
+    }
+
     /// ========================================================================
     /// QUERIES
     /// ========================================================================

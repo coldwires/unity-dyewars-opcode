@@ -4,10 +4,12 @@
 /// =======================================
 #include "GameServer.h"
 #include "ClientConnection.h"
+#include "FakeClientConnection.h"
 #include "core/Log.h"
 #include "lua/LuaEngine.h"
 #include "network/BandwidthMonitor.h"
 #include "network/packets/outgoing/PacketSender.h"
+#include "debug/DebugHttpServer.h"
 
 
 GameServer::GameServer(asio::io_context &io_context)
@@ -22,6 +24,11 @@ GameServer::GameServer(asio::io_context &io_context)
     Log::Info("Server starting on port {}...", Protocol::PORT);
     StartAccept();
     game_loop_thread_ = std::thread(&GameServer::GameLogicThread, this);
+
+    // Start debug HTTP server on port 8082 (game uses 8081)
+    debug_server_ = std::make_unique<DebugHttpServer>(io_context, 8082);
+    debug_server_->SetStatsProvider([this]() { return stats_.ToJson(); });
+    debug_server_->Start();
 }
 
 GameServer::~GameServer() {
@@ -147,6 +154,13 @@ void GameServer::GameLogicThread() {
     constexpr int TICKS_PER_SECOND = 20;
     constexpr std::chrono::milliseconds TICK_RATE(1000 / TICKS_PER_SECOND); // 50ms
 
+    // Pin game thread to CPU core 0 to reduce cache thrashing with IO thread
+#ifdef _WIN32
+    SetThreadAffinityMask(GetCurrentThread(), 1); // Core 0
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    Log::Info("Game thread pinned to core 0 with elevated priority");
+#endif
+
     Log::Info("Game loop started ({} ticks/sec)", TICKS_PER_SECOND);
 
     // Measuring Tick Lag
@@ -171,18 +185,30 @@ void GameServer::GameLogicThread() {
         // 4. Update bandwidth monitor
         BandwidthMonitor::Instance().Tick();
 
-        // 4. Track performance
+        // 5. Track performance
         auto elapsed = std::chrono::steady_clock::now() - start_time;
         auto ms = std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() / 1000.0;
 
         total_ms += ms;
         tick_count++;
 
+        // Update stats for debug dashboard
+        stats_.RecordTick(ms);
+        stats_.SetConnectionCounts(clients_.RealCount(), clients_.FakeCount(), players_.Count());
+        stats_.SetVisibilityCount(world_.Visibility().TrackedPlayerCount());
+        stats_.SetBandwidth(
+            BandwidthMonitor::Instance().GetBytesPerSecond(),
+            BandwidthMonitor::Instance().GetAvgBytesPerSecond(),
+            BandwidthMonitor::Instance().GetTotalBytesOut(),
+            BandwidthMonitor::Instance().GetPacketsPerSecond()
+        );
+
         if (tick_count >= 100) {
             // every 5 sec at 20 TPS
             Log::Trace("Avg tick: {:.3f}ms", total_ms / tick_count);
             total_ms = 0;
             tick_count = 0;
+            stats_.ResetMaxValues();  // Reset max tick time
         }
 
         if (ms > 40.0) {
@@ -202,11 +228,38 @@ void GameServer::GameLogicThread() {
 /// ============================================================================
 
 void GameServer::ProcessTick() {
+    auto t0 = std::chrono::steady_clock::now();
+
+    // Process bot movement (1 bot moves per tick)
+    Actions::BotStressTest::ProcessBotMovement(this, bot_manager_);
+
+    auto t1 = std::chrono::steady_clock::now();
+
     // Get players that changed this tick
     auto dirty_players = players_.ConsumeDirtyPlayers();
-    if (dirty_players.empty()) return;
+    if (dirty_players.empty()) {
+        // Still log bot movement time if significant
+        auto bot_ms = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count() / 1000.0;
+        if (bot_ms > 10.0) {
+            Log::Trace("Bot movement: {:.2f}ms, visibility tracked: {}", bot_ms, world_.Visibility().TrackedPlayerCount());
+        }
+        return;
+    }
 
     BroadcastDirtyPlayers(dirty_players);
+
+    auto t2 = std::chrono::steady_clock::now();
+    auto bot_ms = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count() / 1000.0;
+    auto broadcast_ms = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() / 1000.0;
+
+    // Record stats for debug dashboard
+    stats_.RecordBroadcast(broadcast_ms);
+    stats_.SetDirtyPlayerCount(dirty_players.size());
+
+    if (bot_ms + broadcast_ms > 20.0) {
+        Log::Trace("Tick breakdown - Bot: {:.2f}ms, Broadcast: {:.2f}ms, Dirty: {}, Visibility: {}",
+                   bot_ms, broadcast_ms, dirty_players.size(), world_.Visibility().TrackedPlayerCount());
+    }
 
     // Call Lua hooks
     if (lua_engine_) {
@@ -228,51 +281,73 @@ void GameServer::ProcessTick() {
 /// ============================================================================
 
 void GameServer::BroadcastDirtyPlayers(const std::vector<std::shared_ptr<Player> > &dirty_players) {
+    auto t0 = std::chrono::steady_clock::now();
+    int64_t spatial_us = 0;
+    int64_t visibility_us = 0;
+    size_t total_nearby = 0;
+
     // Map: client_id -> (viewer_ptr, list of dirty players they can see)
-    // Store viewer pointer to avoid double lookup later
     struct ViewerData {
         std::shared_ptr<Player> viewer;
         std::vector<std::shared_ptr<Player>> updates;
     };
     std::unordered_map<uint64_t, ViewerData> viewer_updates;
 
-    // For each dirty player, find viewers using spatial hash
+    // For each dirty player, find viewers using zero-copy iteration
     for (const auto &dirty_player: dirty_players) {
         int16_t px = dirty_player->GetX();
         int16_t py = dirty_player->GetY();
         uint64_t dirty_id = dirty_player->GetID();
 
-        // Use World's spatial hash to find nearby players
-        // This is O(K) where K = players in nearby cells, NOT O(N)!
-        auto nearby_viewers = world_.GetPlayersInRange(px, py);
+        auto ts0 = std::chrono::steady_clock::now();
 
-        for (const auto &viewer: nearby_viewers) {
+        // Zero-copy iteration - no vector allocation or shared_ptr copies
+        world_.ForEachPlayerInRange(px, py, [&](const std::shared_ptr<Player>& viewer) {
+            total_nearby++;
+
             // Skip self - client already predicted their own move
-            if (viewer->GetID() == dirty_id) continue;
+            if (viewer->GetID() == dirty_id) return;
 
             uint64_t client_id = viewer->GetClientID();
             auto &data = viewer_updates[client_id];
             if (!data.viewer) {
-                data.viewer = viewer;  // Store viewer pointer once
+                data.viewer = viewer;  // Store viewer pointer once (only copy)
             }
             data.updates.push_back(dirty_player);
 
             // Keep visibility tracking in sync with what we're sending
-            // If viewer didn't know about dirty_player, they do now
-            // This ensures NotifyObserversOfDeparture works correctly later
+            auto tv0 = std::chrono::steady_clock::now();
             world_.Visibility().AddKnown(viewer->GetID(), dirty_id);
-        }
+            auto tv1 = std::chrono::steady_clock::now();
+            visibility_us += std::chrono::duration_cast<std::chrono::microseconds>(tv1 - tv0).count();
+        });
+
+        auto ts1 = std::chrono::steady_clock::now();
+        spatial_us += std::chrono::duration_cast<std::chrono::microseconds>(ts1 - ts0).count();
     }
 
-    // Send batched packets to each viewer
+    auto t1 = std::chrono::steady_clock::now();
+
+    // Record sub-breakdown for viewer query phase
+    // spatial_us includes everything in lambda, so subtract visibility to get pure spatial time
+    int64_t pure_spatial_us = spatial_us - visibility_us;
+    stats_.RecordViewerQueryBreakdown(pure_spatial_us / 1000.0, visibility_us / 1000.0, total_nearby);
+
+    // OPTIMIZATION: Batch all client lookups in one lock acquisition
+    // Get both real and fake connections
+    auto connections = clients_.GetAnyClientsForIDs(viewer_updates);
+
+    auto t2 = std::chrono::steady_clock::now();
+
+    // Send batched packets to each viewer (real or fake)
     for (auto &[client_id, data]: viewer_updates) {
         if (data.updates.empty()) continue;
 
-        // Get connection directly - no need to look up player again
-        auto conn = clients_.GetClient(client_id);
-        if (!conn) continue;
+        // Get connection from pre-fetched map (no mutex lock here!)
+        auto conn_it = connections.find(client_id);
+        if (conn_it == connections.end()) continue;
 
-        // Build batch packet
+        // Build batch packet (same for both real and fake)
         Protocol::Packet batch;
         // Pre-reserve: opcode (1) + count (1) + players * 13 bytes each (ID:8 + X:2 + Y:2 + facing:1)
         batch.payload.reserve(2 + data.updates.size() * 13);
@@ -298,10 +373,22 @@ void GameServer::BroadcastDirtyPlayers(const std::vector<std::shared_ptr<Player>
         batch.payload[1] = count;
         batch.size = static_cast<uint16_t>(batch.payload.size());
 
-        // Send
+        // Send to either real or fake connection
         auto data_bytes = std::make_shared<std::vector<uint8_t>>(batch.ToBytes());
-        conn->QueueRaw(data_bytes);
+
+        std::visit([&data_bytes](auto&& conn) {
+            if (conn) conn->QueueRaw(data_bytes);
+        }, conn_it->second);
     }
+
+    auto t3 = std::chrono::steady_clock::now();
+
+    // Record breakdown for debug dashboard
+    auto viewer_ms = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count() / 1000.0;
+    auto lookup_ms = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() / 1000.0;
+    auto send_ms = std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2).count() / 1000.0;
+    stats_.RecordBroadcastBreakdown(viewer_ms, lookup_ms, send_ms,
+                                     viewer_updates.size(), dirty_players.size());
 }
 
 void GameServer::OnClientLogin(const std::shared_ptr<ClientConnection> &client) {
@@ -390,13 +477,22 @@ void GameServer::OnClientDisconnect(uint64_t client_id, const std::string &ip) {
     QueueAction([this, client_id, ip] {
         auto player = players_.GetByClientID(client_id);
         if (player) {
-            // Capture all needed data BEFORE any removal
             uint64_t player_id = player->GetID();
-            int16_t px = player->GetX();
-            int16_t py = player->GetY();
 
-            // Get nearby viewers BEFORE removing from spatial hash
-            auto nearby_viewers = world_.GetPlayersInRange(px, py);
+            // Notify everyone who KNOWS about this player (not just nearby)
+            // This fixes ghost players when they moved out of view before disconnecting
+            const auto* known_by = world_.Visibility().GetKnownBy(player_id);
+            if (known_by) {
+                for (uint64_t observer_id : *known_by) {
+                    auto observer = players_.GetByID(observer_id);
+                    if (!observer) continue;
+
+                    auto viewer_conn = clients_.GetClient(observer->GetClientID());
+                    if (!viewer_conn) continue;
+
+                    Packets::PacketSender::PlayerLeft(viewer_conn, player_id);
+                }
+            }
 
             // Remove from World's spatial hash
             world_.RemovePlayer(player_id);
@@ -408,16 +504,6 @@ void GameServer::OnClientDisconnect(uint64_t client_id, const std::string &ip) {
             // Remove from registry
             players_.RemoveByClientID(client_id);
 
-            // Notify only nearby players (using captured player_id, not player->)
-            for (const auto &viewer: nearby_viewers) {
-                if (viewer->GetID() == player_id) continue;
-
-                auto viewer_conn = clients_.GetClient(viewer->GetClientID());
-                if (!viewer_conn) continue;
-
-                Packets::PacketSender::PlayerLeft(viewer_conn, player_id);
-            }
-
             Log::Info("Player {} disconnected", player_id);
         }
 
@@ -428,6 +514,22 @@ void GameServer::OnClientDisconnect(uint64_t client_id, const std::string &ip) {
         limiter_.RemoveConnection(ip);
 
         Log::Info("Client {} disconnected", client_id);
+    });
+}
+
+/// ============================================================================
+/// STRESS TEST BOTS
+/// ============================================================================
+
+void GameServer::SpawnBots(size_t count, bool clustered) {
+    QueueAction([this, count, clustered] {
+        Actions::BotStressTest::SpawnBots(this, bot_manager_, count, clustered);
+    });
+}
+
+void GameServer::RemoveBots() {
+    QueueAction([this] {
+        Actions::BotStressTest::RemoveBots(this, bot_manager_);
     });
 }
 

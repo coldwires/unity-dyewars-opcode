@@ -40,7 +40,14 @@ int main()
         {
             io_context = std::make_unique<asio::io_context>();
             server = std::make_unique<GameServer>(*io_context);
-            io_thread = std::thread([&]() { io_context->run(); });
+            io_thread = std::thread([&]() {
+#ifdef _WIN32
+                // Pin IO thread to core 1 (game thread is on core 0)
+                SetThreadAffinityMask(GetCurrentThread(), 2);
+                Log::Info("IO thread pinned to core 1");
+#endif
+                io_context->run();
+            });
             Log::Info("Server started.");
         }
         catch (const std::exception& e)
@@ -115,17 +122,75 @@ int main()
             Log::Level = 0;
             Log::Info("Log level set to TRACE");
         }
+        else if (cmd.rfind("bots ", 0) == 0)
+        {
+            // "bots 100" -> spawn 100 clustered bots (stress test)
+            // "bots 100 spread" -> spawn 100 spread bots (realistic)
+            if (server)
+            {
+                try
+                {
+                    std::string args = cmd.substr(5);
+                    size_t space_pos = args.find(' ');
+                    size_t count = std::stoul(args.substr(0, space_pos));
+                    bool clustered = true;
+                    if (space_pos != std::string::npos)
+                    {
+                        std::string mode = args.substr(space_pos + 1);
+                        if (mode == "spread" || mode == "s")
+                        {
+                            clustered = false;
+                        }
+                    }
+                    server->SpawnBots(count, clustered);
+                }
+                catch (...)
+                {
+                    std::cout << "Usage: bots <count> [spread]\n";
+                }
+            }
+            else
+            {
+                Log::Warn("Server not running.");
+            }
+        }
+        else if (cmd == "bots")
+        {
+            if (server)
+            {
+                std::cout << "Bots: " << server->BotCount() << std::endl;
+            }
+            else
+            {
+                Log::Warn("Server not running.");
+            }
+        }
+        else if (cmd == "rmbots")
+        {
+            if (server)
+            {
+                server->RemoveBots();
+            }
+            else
+            {
+                Log::Warn("Server not running.");
+            }
+        }
         else if (cmd == "help")
         {
             std::cout << "Commands:\n"
-                << "  start    - Start the server\n"
-                << "  stop     - Stop the server\n"
-                << "  restart  - Restart the server\n"
-                << "  r/reload - Reload Lua scripts\n"
-                << "  stats    - Show bandwidth and player stats\n"
-                << "  status   - Show server status\n"
-                << "  debug    - Enable trace logging\n"
-                << "  exit     - Stop server and exit\n";
+                << "  start      - Start the server\n"
+                << "  stop       - Stop the server\n"
+                << "  restart    - Restart the server\n"
+                << "  r/reload   - Reload Lua scripts\n"
+                << "  stats      - Show bandwidth and player stats\n"
+                << "  status     - Show server status\n"
+                << "  debug      - Enable trace logging\n"
+                << "  bots <N>         - Spawn N bots clustered (stress test)\n"
+                << "  bots <N> spread  - Spawn N bots across map (realistic)\n"
+                << "  bots             - Show current bot count\n"
+                << "  rmbots           - Remove all bots\n"
+                << "  exit       - Stop server and exit\n";
         }
         else if (!cmd.empty())
         {

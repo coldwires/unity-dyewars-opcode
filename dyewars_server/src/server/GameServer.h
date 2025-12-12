@@ -11,12 +11,14 @@
 #include "ClientManager.h"
 #include "game/PlayerRegistry.h"
 #include "game/World.h"
+#include "game/actions/BotStressTest.h"
 #include "network/ConnectionLimiter.h"
+#include "debug/ServerStats.h"
 
 // Forward Declares
 class LuaGameEngine;
-
 class ClientConnection;
+class DebugHttpServer;
 
 /// ============================================================================
 /// GAME SERVER
@@ -133,4 +135,32 @@ private:/// ====================================================================
     int ping_tick_counter_{0};
 
     void SendPingToAllClients();
+
+    // =========================================================================
+    // STRESS TEST BOTS
+    // =========================================================================
+public:
+    /// Spawn stress test bots
+    /// clustered=true: spawn near player (worst case stress test)
+    /// clustered=false: spawn across map (realistic simulation)
+    void SpawnBots(size_t count, bool clustered = true);
+
+    /// Remove all stress test bots
+    void RemoveBots();
+
+    /// Get current bot count
+    size_t BotCount() const { return bot_manager_.bot_ids.size(); }
+
+    /// Get server stats (for debug dashboard)
+    ServerStats& Stats() { return stats_; }
+
+private:
+    /// Bot manager state
+    Actions::BotStressTest::BotManager bot_manager_;
+
+    // =========================================================================
+    // DEBUG
+    // =========================================================================
+    ServerStats stats_;
+    std::unique_ptr<DebugHttpServer> debug_server_;
 };

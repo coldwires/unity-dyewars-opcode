@@ -55,12 +55,14 @@ public:
 
     /// Cell size in tiles.
     ///
-    /// Tune based on VIEW_RANGE:
-    /// - If VIEW_RANGE = 5, CELL_SIZE = 8 means checking ~4 cells covers view
-    /// - Too small = many cells, more hash operations
-    /// - Too large = many entities per cell, slower filtering
-    /// - Rule of thumb: CELL_SIZE ≈ VIEW_RANGE × 1.5
-    static constexpr int16_t CELL_SIZE = 8;  // TODO: Could be uint16_t (map is always positive)
+    /// With VIEW_RANGE = 5 (11x11 view area):
+    /// - CELL_SIZE = 11 means each cell exactly covers the view range
+    /// - cells_radius = (5 / 11) + 1 = 0 + 1 = 1, so 3x3 = 9 cells worst case
+    /// - But most queries hit only 1-4 cells since cell boundaries are rare
+    ///
+    /// Larger cells = fewer cells to check, more entities per cell
+    /// Smaller cells = more cells to check, fewer entities per cell
+    static constexpr int16_t CELL_SIZE = 11;  // Match VIEW_RANGE * 2 + 1
 
     /// ========================================================================
     /// ENTITY MANAGEMENT
@@ -79,8 +81,16 @@ public:
 
         if (entity) {
             entity_ptrs_[entity_id] = entity;
-            // Also store in cell for direct access (avoids double lookup in GetNearbyEntities)
             cell_entities_[key].push_back(entity);
+
+            // Also add to flat grid if enabled
+            if (use_flat_grid_) {
+                int32_t cx = x / CELL_SIZE;
+                int32_t cy = y / CELL_SIZE;
+                if (cx >= 0 && cx < grid_width_ && cy >= 0 && cy < grid_height_) {
+                    flat_grid_[cy * grid_width_ + cx].push_back(entity);
+                }
+            }
         }
     }
 
@@ -91,7 +101,6 @@ public:
         auto it = entity_cells_.find(entity_id);
         if (it == entity_cells_.end()) return;
 
-        // Remove from cell
         int64_t key = it->second;
         cells_[key].erase(entity_id);
 
@@ -108,12 +117,25 @@ public:
             }
         }
 
+        // Remove from flat grid if enabled
+        if (use_flat_grid_) {
+            // Derive cell from key (NOT from player position - it may have changed!)
+            int32_t cx = static_cast<int32_t>(key >> 32);
+            int32_t cy = static_cast<int32_t>(key & 0xFFFFFFFF);
+            if (cx >= 0 && cx < grid_width_ && cy >= 0 && cy < grid_height_) {
+                auto& vec = flat_grid_[cy * grid_width_ + cx];
+                vec.erase(std::remove_if(vec.begin(), vec.end(),
+                    [entity_id](const std::shared_ptr<Player>& p) {
+                        return p && p->GetID() == entity_id;
+                    }), vec.end());
+            }
+        }
+
         // Clean up empty cells to prevent memory bloat
         if (cells_[key].empty()) {
             cells_.erase(key);
         }
 
-        // Remove from tracking maps
         entity_cells_.erase(it);
         entity_ptrs_.erase(entity_id);
     }
@@ -133,7 +155,6 @@ public:
         int64_t new_key = CellKey(new_x, new_y);
 
         // Same cell? No update needed (common case!)
-        // Players often move within the same cell many times
         if (it->second == new_key) {
             return false;
         }
@@ -161,8 +182,29 @@ public:
                     cell_entities_.erase(old_cell_it);
                 }
             }
-            // Add to new cell_entities_
             cell_entities_[new_key].push_back(ptr_it->second);
+
+            // Update flat grid if enabled
+            if (use_flat_grid_) {
+                // Derive old cell from old_key (NOT from player position - it's already updated!)
+                int32_t old_cx = static_cast<int32_t>(old_key >> 32);
+                int32_t old_cy = static_cast<int32_t>(old_key & 0xFFFFFFFF);
+                int32_t new_cx = new_x / CELL_SIZE;
+                int32_t new_cy = new_y / CELL_SIZE;
+
+                // Remove from old flat cell
+                if (old_cx >= 0 && old_cx < grid_width_ && old_cy >= 0 && old_cy < grid_height_) {
+                    auto& old_vec = flat_grid_[old_cy * grid_width_ + old_cx];
+                    old_vec.erase(std::remove_if(old_vec.begin(), old_vec.end(),
+                        [entity_id](const std::shared_ptr<Player>& p) {
+                            return p && p->GetID() == entity_id;
+                        }), old_vec.end());
+                }
+                // Add to new flat cell
+                if (new_cx >= 0 && new_cx < grid_width_ && new_cy >= 0 && new_cy < grid_height_) {
+                    flat_grid_[new_cy * grid_width_ + new_cx].push_back(ptr_it->second);
+                }
+            }
         }
 
         // Add to new cell (ID set)
@@ -221,7 +263,7 @@ public:
 
     /// Get all entity pointers within range.
     /// More convenient when you need actual entity data.
-    /// Optimized: uses cell_entities_ for direct pointer access (no ID→ptr lookup).
+    /// Optimized: uses flat_grid_ for O(1) cell access when available.
     std::vector<std::shared_ptr<Player>> GetNearbyEntities(int16_t x,     // TODO: Could be uint16_t
                                                            int16_t y,     // TODO: Could be uint16_t
                                                            int16_t range) // TODO: Could be uint16_t
@@ -242,19 +284,78 @@ public:
 
                 if (cx < 0 || cy < 0) continue;
 
-                int64_t key = MakeCellKey(cx, cy);
-                // Direct pointer lookup - no ID→entity_ptrs_ indirection
-                auto cell_it = cell_entities_.find(key);
-                if (cell_it != cell_entities_.end()) {
-                    for (const auto& entity : cell_it->second) {
+                // Use flat grid if available for O(1) cell access
+                if (use_flat_grid_ && cx < grid_width_ && cy < grid_height_) {
+                    size_t idx = cy * grid_width_ + cx;
+                    for (const auto& entity : flat_grid_[idx]) {
                         if (entity) {
                             result.push_back(entity);
+                        }
+                    }
+                } else {
+                    int64_t key = MakeCellKey(cx, cy);
+                    auto cell_it = cell_entities_.find(key);
+                    if (cell_it != cell_entities_.end()) {
+                        for (const auto& entity : cell_it->second) {
+                            if (entity) {
+                                result.push_back(entity);
+                            }
                         }
                     }
                 }
             }
         }
         return result;
+    }
+
+    /// Zero-copy iteration over nearby entities.
+    /// Calls func for each entity in range. No vector allocation or shared_ptr copies.
+    /// Use this in hot paths instead of GetNearbyEntities().
+    template<typename Func>
+    void ForEachNearby(int16_t x, int16_t y, int16_t range, Func&& func) const {
+        AssertGameThread();
+
+        int32_t center_cx = x / CELL_SIZE;
+        int32_t center_cy = y / CELL_SIZE;
+        int32_t cells_radius = (range / CELL_SIZE) + 1;
+
+        for (int32_t dcx = -cells_radius; dcx <= cells_radius; dcx++) {
+            for (int32_t dcy = -cells_radius; dcy <= cells_radius; dcy++) {
+                int32_t cx = center_cx + dcx;
+                int32_t cy = center_cy + dcy;
+
+                if (cx < 0 || cy < 0) continue;
+
+                // Use flat grid if available, otherwise fall back to hash map
+                if (use_flat_grid_ && cx < grid_width_ && cy < grid_height_) {
+                    size_t idx = cy * grid_width_ + cx;
+                    for (const auto& entity : flat_grid_[idx]) {
+                        if (entity) {
+                            func(entity);
+                        }
+                    }
+                } else {
+                    int64_t key = MakeCellKey(cx, cy);
+                    auto cell_it = cell_entities_.find(key);
+                    if (cell_it != cell_entities_.end()) {
+                        for (const auto& entity : cell_it->second) {
+                            if (entity) {
+                                func(entity);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Initialize flat grid for known world size (call once at startup)
+    /// This eliminates hash lookups for much faster spatial queries
+    void InitFlatGrid(int16_t world_width, int16_t world_height) {
+        grid_width_ = (world_width / CELL_SIZE) + 1;
+        grid_height_ = (world_height / CELL_SIZE) + 1;
+        flat_grid_.resize(grid_width_ * grid_height_);
+        use_flat_grid_ = true;
     }
 
     /// ========================================================================
@@ -376,6 +477,12 @@ private:
 
     /// entity_id -> entity pointer (for GetEntity by ID)
     std::unordered_map<uint64_t, std::shared_ptr<Player>> entity_ptrs_;
+
+    /// Flat grid for O(1) cell access (no hash lookups)
+    std::vector<std::vector<std::shared_ptr<Player>>> flat_grid_;
+    int32_t grid_width_ = 0;
+    int32_t grid_height_ = 0;
+    bool use_flat_grid_ = false;
 
     /// Thread owner for debug assertions (mutable for const methods)
     mutable ThreadOwner thread_owner_;

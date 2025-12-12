@@ -1,5 +1,6 @@
 #include "ClientManager.h"
 #include "ClientConnection.h"
+#include "FakeClientConnection.h"
 #include "core/Log.h"
 
 void ClientManager::AddClient(const std::shared_ptr<ClientConnection> &client) {
@@ -12,13 +13,29 @@ void ClientManager::AddClient(const std::shared_ptr<ClientConnection> &client) {
     Log::Debug("Client {} added to manager", client->GetClientID());
 }
 
+void ClientManager::AddFakeClient(const std::shared_ptr<FakeClientConnection> &client) {
+    assert(client && "AddFakeClient: null client");
+    assert(client->GetClientID() != 0 && "AddFakeClient: invalid ID");
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        clients_[client->GetClientID()] = client;
+        fake_count_++;
+    }
+    Log::Trace("Fake client {} added to manager", client->GetClientID());
+}
+
 void ClientManager::RemoveClient(uint64_t client_id) {
     assert(client_id != 0);
     bool removed = false;
+    bool was_fake = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (clients_.erase(client_id) > 0) {
+        auto it = clients_.find(client_id);
+        if (it != clients_.end()) {
+            was_fake = std::holds_alternative<std::shared_ptr<FakeClientConnection>>(it->second);
+            clients_.erase(it);
             removed = true;
+            if (was_fake && fake_count_ > 0) fake_count_--;
         }
     }
     if (removed) Log::Debug("Client {} removed from manager", client_id);
@@ -27,7 +44,18 @@ void ClientManager::RemoveClient(uint64_t client_id) {
 std::shared_ptr<ClientConnection> ClientManager::GetClient(uint64_t client_id) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = clients_.find(client_id);
-    return it != clients_.end() ? it->second : nullptr;
+    if (it == clients_.end()) return nullptr;
+    if (auto* real = std::get_if<std::shared_ptr<ClientConnection>>(&it->second)) {
+        return *real;
+    }
+    return nullptr;  // It's a fake client
+}
+
+std::optional<AnyConnection> ClientManager::GetAnyClient(uint64_t client_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = clients_.find(client_id);
+    if (it == clients_.end()) return std::nullopt;
+    return it->second;
 }
 
 void ClientManager::BroadcastToOthers(
@@ -37,14 +65,14 @@ void ClientManager::BroadcastToOthers(
     std::vector<std::shared_ptr<ClientConnection>> clients;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        /// Without reserve, the vector doubles in size each time it runs out of space
-        /// — allocates new memory, copies everything, frees old memory.
-        /// With 1000 clients, that's several reallocations.
         clients.reserve(clients_.size());
 
         for (const auto &[id, conn]: clients_) {
-            if (id != exclude_id)
-                clients.push_back(conn);
+            if (id != exclude_id) {
+                if (auto* real = std::get_if<std::shared_ptr<ClientConnection>>(&conn)) {
+                    clients.push_back(*real);
+                }
+            }
         }
     } // Release lock
     for (const auto &client: clients) {
@@ -59,12 +87,41 @@ void ClientManager::BroadcastToAll(
     {
         std::lock_guard<std::mutex> lock(mutex_);
         clients.reserve(clients_.size());
-        for (const auto &[id, conn]: clients_)
-            clients.push_back(conn);
+        for (const auto &[id, conn]: clients_) {
+            if (auto* real = std::get_if<std::shared_ptr<ClientConnection>>(&conn)) {
+                clients.push_back(*real);
+            }
+        }
     } //Lock released
 
     for (const auto &conn: clients)
         action(conn);
+}
+
+void ClientManager::BroadcastToAllIncludingFake(
+        const std::function<void(const std::shared_ptr<ClientConnection>&)>& real_action,
+        const std::function<void(const std::shared_ptr<FakeClientConnection>&)>& fake_action) {
+
+    std::vector<std::shared_ptr<ClientConnection>> real_clients;
+    std::vector<std::shared_ptr<FakeClientConnection>> fake_clients;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        real_clients.reserve(clients_.size() - fake_count_);
+        fake_clients.reserve(fake_count_);
+
+        for (const auto &[id, conn]: clients_) {
+            if (auto* real = std::get_if<std::shared_ptr<ClientConnection>>(&conn)) {
+                real_clients.push_back(*real);
+            } else if (auto* fake = std::get_if<std::shared_ptr<FakeClientConnection>>(&conn)) {
+                fake_clients.push_back(*fake);
+            }
+        }
+    }
+
+    for (const auto &conn: real_clients)
+        real_action(conn);
+    for (const auto &conn: fake_clients)
+        fake_action(conn);
 }
 
 size_t ClientManager::Count() {
@@ -72,28 +129,29 @@ size_t ClientManager::Count() {
     return clients_.size();
 }
 
-/// <summary>
-/// Closes all client connections during server shutdown.
-/// </summary>
+size_t ClientManager::RealCount() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return clients_.size() - fake_count_;
+}
+
+size_t ClientManager::FakeCount() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return fake_count_;
+}
+
 void ClientManager::CloseAll() {
-    std::unordered_map<uint64_t, std::shared_ptr<ClientConnection>> snapshot;
+    std::unordered_map<uint64_t, AnyConnection> snapshot;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        // Use swap instead of move.
-        // std::move leaves clients_ in an "unspecified but valid" state,
-        // which could be non-empty on some implementations.
-        // swap guarantees clients_ is empty and snapshot has the contents.
-        // This is safer if any code accesses clients_ after CloseAll.
         snapshot.swap(clients_);
+        fake_count_ = 0;
     }// Lock released
 
     for (auto &[id, conn]: snapshot) {
-        conn->CloseSocket();
+        // Only close real connections
+        if (auto* real = std::get_if<std::shared_ptr<ClientConnection>>(&conn)) {
+            (*real)->CloseSocket();
+        }
+        // Fake connections just get dropped
     }
-    // Why CloseSocket and not Disconnect?
-    // Disconnect tries to lock ClientManager and PlayerRegistry to clean up state.
-    // But we're shutting down - those structures are being torn down too.
-    // CloseSocket just closes the TCP connection, which is all we need.
-    // The shared_ptrs in snapshot will be released when this function returns,
-    // cleaning up the ClientConnection objects naturally.
 } // snapshot dies here, dropping all shared_ptrs

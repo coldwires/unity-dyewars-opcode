@@ -73,11 +73,15 @@ public:
     /// Create a world with a new tilemap
     explicit World(int16_t width, int16_t height)  // TODO: Could be uint16_t
             : tilemap_(std::make_unique<TileMap>(width, height)) {
+        // Initialize flat grid for O(1) spatial lookups (no hash map overhead)
+        spatial_hash_.InitFlatGrid(width, height);
     }
 
     /// Create a world with an existing tilemap (for loading saved maps)
     explicit World(std::unique_ptr<TileMap> tilemap)
             : tilemap_(std::move(tilemap)) {
+        // Initialize flat grid for O(1) spatial lookups
+        spatial_hash_.InitFlatGrid(tilemap_->GetWidth(), tilemap_->GetHeight());
     }
 
     /// ========================================================================
@@ -174,6 +178,24 @@ public:
             }
         }
         return result;
+    }
+
+    /// Zero-copy iteration over players in VIEW_RANGE.
+    /// Calls func for each player. No vector allocation or shared_ptr copies.
+    /// Use in hot paths like BroadcastDirtyPlayers.
+    template<typename Func>
+    void ForEachPlayerInRange(int16_t x, int16_t y, Func&& func) const {
+        ForEachPlayerInRange(x, y, VIEW_RANGE, std::forward<Func>(func));
+    }
+
+    /// Zero-copy iteration with custom range.
+    template<typename Func>
+    void ForEachPlayerInRange(int16_t x, int16_t y, int16_t range, Func&& func) const {
+        spatial_hash_.ForEachNearby(x, y, range, [&](const std::shared_ptr<Player>& player) {
+            if (IsInRange(x, y, player->GetX(), player->GetY(), range)) {
+                func(player);
+            }
+        });
     }
 
     /// Get all player IDs within VIEW_RANGE (when you just need IDs)

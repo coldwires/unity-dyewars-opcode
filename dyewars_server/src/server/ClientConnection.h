@@ -8,6 +8,7 @@
 #include <queue>
 #include <mutex>
 #include <unordered_set>
+#include "IClientConnection.h"
 #include "network/Packets/Protocol.h"
 #include "core/ThreadSafety.h"
 
