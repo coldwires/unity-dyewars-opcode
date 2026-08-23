@@ -102,8 +102,6 @@ Desktop.ini
 *.swp
 *~
 /dyewars/Assets/_Recovery
-NOTES.md
-.notes/
 
 # large file, kept in project-roots instead
 dyewars/build.zip
