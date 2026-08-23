@@ -359,7 +359,7 @@ DyeWarsProject/
 │   │   └── lua/                    # LuaEngine
 │   ├── scripts/main.lua            # Hot-reloadable game logic
 │   ├── tests/                      # Unit tests
-│   ├── NOTES.md                   # context
+│   │                               # NOTES.md is in project-roots\unity-dyewars-opcode\
 │   └── CMakeLists.txt
 │
 └── README.md
