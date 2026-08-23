@@ -17,7 +17,7 @@
 /// In release builds, all of this compiles away to ZERO overhead.
 /// In debug builds, it catches violations immediately with clear errors.
 ///
-/// Created on Dec 10, 2025
+/// Created Dec 10, 2025
 /// =======================================
 #pragma once
 
